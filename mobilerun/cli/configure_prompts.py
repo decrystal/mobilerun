@@ -52,13 +52,39 @@ def select_prompt(
     for index, choice in enumerate(choices, start=1):
         suffix = f" - {choice.hint}" if choice.hint else ""
         click.echo(f"  {index}. {choice.label}{suffix}")
-    valid_values = [choice.value for choice in choices]
-    return click.prompt(
-        "Select option",
-        type=click.Choice(valid_values, case_sensitive=False),
-        default=default or valid_values[0],
-        show_choices=True,
+
+    default_index = next(
+        (
+            index
+            for index, choice in enumerate(choices, start=1)
+            if default is not None and choice.value.casefold() == default.casefold()
+        ),
+        1,
     )
+    while True:
+        response = click.prompt(
+            "Select option",
+            type=str,
+            default=str(default_index),
+            show_choices=False,
+        ).strip()
+        if response.isdecimal():
+            selected_index = int(response)
+            if 1 <= selected_index <= len(choices):
+                return choices[selected_index - 1].value
+
+        normalized_response = response.casefold()
+        for choice in choices:
+            if normalized_response in {
+                choice.label.casefold(),
+                choice.value.casefold(),
+            }:
+                return choice.value
+
+        click.echo(
+            f"Please enter a number from 1 to {len(choices)} or a listed label.",
+            err=True,
+        )
 
 
 def text_prompt(

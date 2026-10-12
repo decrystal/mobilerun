@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..helpers.coordinate import bounds_to_normalized
+from ..helpers.geometry import rects_overlap
 from .base import TreeFormatter
 
 
@@ -86,7 +87,9 @@ class IndexedFormatter(TreeFormatter):
 
     def _format_ui_elements_text(self, a11y_tree: List[Dict[str, Any]]) -> str:
         """Format UI elements text."""
-        coord_note = " (normalized [0-1000])" if self.use_normalized else ""
+        # Label only bounds that were actually normalized.
+        normalized = self.use_normalized and self.screen_width and self.screen_height
+        coord_note = " (normalized [0-1000])" if normalized else ""
         schema = (
             "'index. className: resourceId; checkedState, text - bounds(x1,y1,x2,y2)'"
         )
@@ -118,11 +121,11 @@ class IndexedFormatter(TreeFormatter):
             class_name = element.get("className", "")
             resource_id = element.get("resourceId", "")
             text = element.get("text", "")
-            # Model-facing text shows display-space bounds when the screenshot
-            # is resized for the model; "bounds" (native pixels) drive real taps.
+            # Model-facing text shows display-space or normalized bounds;
+            # "bounds" (native pixels) drive real taps.
             bounds = element.get("displayBounds") or element.get("bounds", "")
             checkedState = element.get("checkedState", "")
-            children = element.get("children", [])
+            children = element.get("children") or []
 
             line_parts = []
             if index != "":
@@ -171,14 +174,50 @@ class IndexedFormatter(TreeFormatter):
         results.append(formatted)
         counter[0] += 1
 
-        for child in node.get("children", []):
-            results.extend(
-                self._flatten_with_index(
-                    child, counter, parent_index=formatted["index"]
-                )
+        siblings = []
+        for child in node.get("children") or []:
+            descendants = self._flatten_with_index(
+                child, counter, parent_index=formatted["index"]
             )
+            siblings.append((child, descendants[0]))
+            results.extend(descendants)
+
+        self._add_tap_blockers(siblings)
 
         return results
+
+    @staticmethod
+    def _add_tap_blockers(
+        siblings: List[Tuple[Dict[str, Any], Dict[str, Any]]],
+    ) -> None:
+        """Retain proven sibling touch obstructions before discarding hierarchy.
+
+        Android drawingOrder is relative to siblings, not a global z-index.
+        Portal can append other windows as children, so windowId must match.
+        Missing or tied order is insufficient evidence to change existing taps.
+        """
+        for raw, formatted in siblings:
+            order = raw.get("drawingOrder")
+            window = raw.get("windowId")
+            if not isinstance(order, int) or not isinstance(window, int) or window < 0:
+                continue
+            bounds = tuple(map(int, formatted["bounds"].split(",")))
+            blockers = []
+            for other, candidate in siblings:
+                other_order = other.get("drawingOrder")
+                if (
+                    other.get("windowId") != window
+                    or not isinstance(other_order, int)
+                    or other_order <= order
+                    or other.get("isVisibleToUser") is False
+                    or not (other.get("isClickable") or other.get("isLongClickable"))
+                ):
+                    continue
+                candidate_bounds = tuple(map(int, candidate["bounds"].split(",")))
+                if rects_overlap(bounds, candidate_bounds):
+                    blockers.append(candidate["bounds"])
+            if blockers:
+                formatted["tapBlockers"] = blockers
 
     def _format_node(self, node: Dict[str, Any], index: int) -> Dict[str, Any]:
         """Format single node to Mobilerun format."""
@@ -187,7 +226,7 @@ class IndexedFormatter(TreeFormatter):
 
         display_bounds_str = None
         if self.use_normalized and self.screen_width and self.screen_height:
-            bounds_str = bounds_to_normalized(
+            display_bounds_str = bounds_to_normalized(
                 bounds_str, self.screen_width, self.screen_height
             )
         elif self.display_scale_x != 1.0 or self.display_scale_y != 1.0:

@@ -4,7 +4,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from llama_index.core.types import PydanticProgramMode
 
+from mobilerun.agent.providers.registry import OPENAI_GPT6_MODELS
 from mobilerun.agent.utils.llm_picker import (
     load_llm,
     load_llms_from_profiles,
@@ -37,7 +39,10 @@ def test_normalize_provider_name_accepts_user_facing_aliases(
 @pytest.mark.parametrize(
     "model",
     [
-        "gpt-5.5",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -66,7 +71,10 @@ def test_openai_responses_current_reasoning_models_omit_sampling_params(
 @pytest.mark.parametrize(
     "model",
     [
-        "gpt-5.5",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -102,6 +110,8 @@ def test_openai_structured_predict_omits_per_call_sampling_params(
     call_kwargs = {
         "temperature": 0.4,
         "top_p": 0.6,
+        "top_logprobs": 2,
+        "logprobs": True,
         "max_output_tokens": 32,
     }
 
@@ -124,13 +134,20 @@ def test_openai_structured_predict_omits_per_call_sampling_params(
     assert async_result.value == "OK"
     for payload in (sync_payload, async_payload):
         assert {"temperature", "top_p"}.isdisjoint(payload)
+        if model in OPENAI_GPT6_MODELS:
+            assert {"top_logprobs", "logprobs"}.isdisjoint(payload)
+        if model == "gpt-6-astra":
+            assert payload["reasoning"] == {"effort": "low"}
         assert payload["max_output_tokens"] == 32
 
 
 @pytest.mark.parametrize(
     ("model", "context_window"),
     [
-        ("gpt-5.5", 1_050_000),
+        ("gpt-6-astra", 1_050_000),
+        ("gpt-6-sol", 1_050_000),
+        ("gpt-6-luna", 1_050_000),
+        ("gpt-6.1-sol", 1_050_000),
         ("gpt-5.6-sol", 1_050_000),
         ("gpt-5.6-terra", 1_050_000),
         ("gpt-5.6-luna", 1_050_000),
@@ -166,10 +183,185 @@ def test_openai_responses_preserves_explicit_context_window_override() -> None:
     assert llm.metadata.context_window == 123_456
 
 
-def test_openai_alias_loads_openai_responses_without_temperature_for_gpt_5_5() -> None:
+def test_openai_astra_preserves_explicit_context_window_override() -> None:
+    llm = load_llm(
+        "OpenAIResponses",
+        model="gpt-6-astra",
+        api_key="stub",
+        context_window=123_456,
+    )
+
+    assert llm.metadata.context_window == 123_456
+
+
+def test_openai_astra_strips_logprob_configuration_and_forwards_reasoning() -> None:
+    llm = load_llm(
+        "OpenAIResponses",
+        model="gpt-6-astra",
+        api_key="stub",
+        temperature=0.4,
+        top_p=0.6,
+        include=["message.output_text.logprobs", "reasoning.encrypted_content"],
+        reasoning_options={"effort": "max", "summary": "auto"},
+        additional_kwargs={
+            "model": "gpt-5.5",
+            "top_logprobs": 2,
+            "logprobs": True,
+        },
+    )
+
+    kwargs = llm._get_model_kwargs(
+        temperature=0.7,
+        top_p=0.8,
+        include=("message.output_text.logprobs", "reasoning.encrypted_content"),
+        extra_body={
+            "model": "gpt-5.5",
+            "temperature": 0.9,
+            "top_p": 0.9,
+            "top_logprobs": 3,
+            "logprobs": True,
+            "include": (
+                "message.output_text.logprobs",
+                "reasoning.encrypted_content",
+            ),
+            "reasoning": {"effort": "high"},
+        },
+    )
+
+    assert {"temperature", "top_p", "top_logprobs", "logprobs"}.isdisjoint(kwargs)
+    assert kwargs["model"] == "gpt-6-astra"
+    assert kwargs["include"] == ["reasoning.encrypted_content"]
+    assert kwargs["reasoning"] == {"effort": "max", "summary": "auto"}
+    extra_body = kwargs["extra_body"]
+    assert {
+        "model",
+        "temperature",
+        "top_p",
+        "top_logprobs",
+        "logprobs",
+    }.isdisjoint(extra_body)
+    assert extra_body["include"] == ["reasoning.encrypted_content"]
+    assert extra_body["reasoning"] == {"effort": "high"}
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+def test_openai_astra_accepts_supported_reasoning_effort(effort: str) -> None:
+    llm = load_llm(
+        "OpenAIResponses",
+        model="gpt-6-astra",
+        api_key="stub",
+        reasoning_options={"effort": effort},
+    )
+
+    assert llm._get_model_kwargs()["reasoning"] == {"effort": effort}
+
+
+@pytest.mark.parametrize("effort", ["none", "minimal", "unsupported"])
+def test_openai_astra_rejects_unsupported_reasoning_effort(effort: str) -> None:
+    llm = load_llm(
+        "OpenAIResponses",
+        model="gpt-6-astra",
+        api_key="stub",
+        reasoning_options={"effort": effort},
+    )
+
+    with pytest.raises(ValueError, match="does not support reasoning effort"):
+        llm._get_model_kwargs()
+
+
+@pytest.mark.parametrize("effort", ["none", "minimal", "unsupported"])
+def test_openai_astra_rejects_unsupported_extra_body_reasoning(
+    effort: str,
+) -> None:
+    llm = load_llm(
+        "OpenAIResponses",
+        model="gpt-6-astra",
+        api_key="stub",
+    )
+
+    with pytest.raises(ValueError, match="does not support reasoning effort"):
+        llm._get_model_kwargs(
+            extra_body={"reasoning": {"effort": effort}},
+        )
+
+
+def test_openai_astra_structured_requests_retain_configured_options() -> None:
+    from llama_index.core.prompts import PromptTemplate
+    from pydantic import BaseModel
+
+    class StructuredResult(BaseModel):
+        value: str
+
+    sync_payload: dict[str, Any] = {}
+    async_payload: dict[str, Any] = {}
+
+    def parse_sync(**kwargs: Any) -> Any:
+        sync_payload.update(kwargs)
+        return SimpleNamespace(output_parsed=StructuredResult(value="OK"))
+
+    async def parse_async(**kwargs: Any) -> Any:
+        async_payload.update(kwargs)
+        return SimpleNamespace(output_parsed=StructuredResult(value="OK"))
+
+    llm = load_llm(
+        "OpenAIResponses",
+        model="gpt-6-astra",
+        api_key="stub",
+        include=["message.output_text.logprobs", "reasoning.encrypted_content"],
+        reasoning_options={"effort": "max", "summary": "auto"},
+        additional_kwargs={
+            "temperature": 0.4,
+            "top_logprobs": 2,
+            "extra_body": {
+                "top_p": 0.6,
+                "include": (
+                    "message.output_text.logprobs",
+                    "reasoning.encrypted_content",
+                ),
+            },
+        },
+    )
+    llm._client = SimpleNamespace(responses=SimpleNamespace(parse=parse_sync))
+    llm._aclient = SimpleNamespace(responses=SimpleNamespace(parse=parse_async))
+    prompt = PromptTemplate("Return {value}")
+    call_kwargs = {
+        "logprobs": True,
+        "top_p": 0.8,
+        "max_output_tokens": 32,
+    }
+
+    sync_result = llm.structured_predict(
+        StructuredResult,
+        prompt,
+        llm_kwargs=dict(call_kwargs),
+        value="OK",
+    )
+    async_result = asyncio.run(
+        llm.astructured_predict(
+            StructuredResult,
+            prompt,
+            llm_kwargs=dict(call_kwargs),
+            value="OK",
+        )
+    )
+
+    assert sync_result.value == "OK"
+    assert async_result.value == "OK"
+    for payload in (sync_payload, async_payload):
+        assert payload["model"] == "gpt-6-astra"
+        assert payload["reasoning"] == {"effort": "max", "summary": "auto"}
+        assert payload["include"] == ["reasoning.encrypted_content"]
+        assert payload["max_output_tokens"] == 32
+        assert {"temperature", "top_p", "top_logprobs", "logprobs"}.isdisjoint(payload)
+        assert payload["extra_body"] == {"include": ["reasoning.encrypted_content"]}
+
+
+def test_openai_alias_loads_openai_responses_without_temperature_for_gpt_6_1_sol() -> (
+    None
+):
     llm = load_llm(
         "OpenAI",
-        model="gpt-5.5",
+        model="gpt-6.1-sol",
         api_key="stub",
         temperature=0.4,
     )
@@ -185,14 +377,14 @@ def test_openai_responses_profile_loads_with_current_default_metadata() -> None:
         {
             "manager": LLMProfile(
                 provider="OpenAIResponses",
-                model="gpt-5.5",
+                model="gpt-6-astra",
                 kwargs={"api_key": "stub"},
             )
         }
     )["manager"]
 
     assert type(llm).__name__ == "MobilerunOpenAIResponses"
-    assert llm.metadata.model_name == "gpt-5.5"
+    assert llm.metadata.model_name == "gpt-6-astra"
     assert llm.metadata.context_window == 1_050_000
 
 
@@ -233,9 +425,9 @@ def test_openai_oauth_rejects_unsupported_codex_model() -> None:
 @pytest.mark.parametrize(
     "model",
     [
+        "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
         "gemini-3.5-flash",
         "gemini-3-flash-preview",
         "gemini-3.1-pro-preview",
@@ -263,9 +455,17 @@ def test_gemini_oauth_allows_live_unadvertised_2_5_ids(model: str) -> None:
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
+    [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+    ],
 )
-def test_new_google_genai_models_omit_sampling_configuration(model: str) -> None:
+def test_gemini_3_google_genai_models_omit_sampling_configuration(model: str) -> None:
     from google.genai import types
 
     llm = load_llm(
@@ -304,7 +504,10 @@ def test_new_google_genai_models_omit_sampling_configuration(model: str) -> None
     assert call_kwargs["generation_config"] == {"max_output_tokens": 32}
 
 
-def test_gemini_3_7_image_tool_chat_uses_native_payload_without_sampling() -> None:
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash"])
+def test_gemini_image_tool_chat_uses_native_payload_without_sampling(
+    model: str,
+) -> None:
     from google.genai import types
     from llama_index.core.base.llms.types import (
         ChatMessage,
@@ -349,7 +552,7 @@ def test_gemini_3_7_image_tool_chat_uses_native_payload_without_sampling() -> No
 
     llm = load_llm(
         "GoogleGenAI",
-        model="gemini-3.7-flash",
+        model=model,
         api_key="stub",
         context_window=1_048_576,
         max_tokens=64,
@@ -389,7 +592,7 @@ def test_gemini_3_7_image_tool_chat_uses_native_payload_without_sampling() -> No
 
     create_kwargs = captured["create"]
     config = create_kwargs["config"].model_dump(exclude_none=True)
-    assert create_kwargs["model"] == llm.model == "gemini-3.7-flash"
+    assert create_kwargs["model"] == llm.model == model
     assert {"temperature", "top_p", "top_k"}.isdisjoint(config)
     assert config["max_output_tokens"] == 32
     assert config["tools"][0]["function_declarations"][0]["name"] == "live_probe"
@@ -452,7 +655,9 @@ class _AsyncStructuredModelsCapture:
         return _AsyncChunks([SimpleNamespace(parsed=self._output, candidates=[])])
 
 
-def _google_structured_llm_with_capture() -> tuple[Any, Any, Any, list[dict[str, Any]]]:
+def _google_structured_llm_with_capture(
+    model: str = "gemini-3.7-flash",
+) -> tuple[Any, Any, Any, list[dict[str, Any]]]:
     from llama_index.core.prompts import PromptTemplate
     from pydantic import BaseModel
 
@@ -463,7 +668,7 @@ def _google_structured_llm_with_capture() -> tuple[Any, Any, Any, list[dict[str,
     calls: list[dict[str, Any]] = []
     llm = load_llm(
         "GoogleGenAI",
-        model="gemini-3.7-flash",
+        model=model,
         api_key="stub",
         max_tokens=64,
         context_window=1_000_000,
@@ -497,7 +702,8 @@ def _assert_google_request_omits_sampling(request: dict[str, Any]) -> None:
     assert sampling_params.isdisjoint(request["config"])
 
 
-def test_gemini_3_7_chat_paths_strip_sampling_payload(monkeypatch) -> None:
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash"])
+def test_gemini_chat_paths_strip_sampling_payload(monkeypatch, model: str) -> None:
     from llama_index.llms.google_genai import GoogleGenAI
 
     calls: list[tuple[str, dict[str, Any]]] = []
@@ -525,7 +731,7 @@ def test_gemini_3_7_chat_paths_strip_sampling_payload(monkeypatch) -> None:
 
     llm = load_llm(
         "GoogleGenAI",
-        model="gemini-3.7-flash",
+        model=model,
         api_key="stub",
         max_tokens=64,
         context_window=1_000_000,
@@ -552,8 +758,9 @@ def test_gemini_3_7_chat_paths_strip_sampling_payload(monkeypatch) -> None:
         assert call_kwargs["generation_config"] == {"max_output_tokens": 32}
 
 
-def test_google_direct_structured_path_strips_sampling_payload() -> None:
-    llm, output_cls, prompt, calls = _google_structured_llm_with_capture()
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash"])
+def test_google_direct_structured_path_strips_sampling_payload(model: str) -> None:
+    llm, output_cls, prompt, calls = _google_structured_llm_with_capture(model)
 
     result = llm.structured_predict_without_function_calling(
         output_cls,
@@ -573,10 +780,11 @@ def test_google_direct_structured_path_strips_sampling_payload() -> None:
         ("stream_structured_predict", True),
     ],
 )
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash"])
 def test_google_sync_structured_paths_strip_sampling_payload(
-    method_name: str, streaming: bool
+    method_name: str, streaming: bool, model: str
 ) -> None:
-    llm, output_cls, prompt, calls = _google_structured_llm_with_capture()
+    llm, output_cls, prompt, calls = _google_structured_llm_with_capture(model)
 
     result = getattr(llm, method_name)(
         output_cls,
@@ -592,9 +800,10 @@ def test_google_sync_structured_paths_strip_sampling_payload(
     assert calls[-1]["config"]["max_output_tokens"] == 32
 
 
-def test_google_async_structured_paths_strip_sampling_payload() -> None:
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash"])
+def test_google_async_structured_paths_strip_sampling_payload(model: str) -> None:
     async def run() -> None:
-        llm, output_cls, prompt, calls = _google_structured_llm_with_capture()
+        llm, output_cls, prompt, calls = _google_structured_llm_with_capture(model)
 
         result = await llm.astructured_predict(
             output_cls,
@@ -622,10 +831,10 @@ def test_google_async_structured_paths_strip_sampling_payload() -> None:
     asyncio.run(run())
 
 
-def test_existing_google_genai_model_keeps_sampling_configuration() -> None:
+def test_pre_gemini_3_google_genai_model_keeps_sampling_configuration() -> None:
     llm = load_llm(
         "GoogleGenAI",
-        model="gemini-3.5-flash",
+        model="gemini-2.5-flash",
         api_key="stub",
         max_tokens=64,
         context_window=1_000_000,
@@ -655,11 +864,14 @@ def test_explicit_retired_default_google_profile_remains_loadable() -> None:
 
 
 def test_gemini_oauth_supported_choices_come_from_registry() -> None:
-    with pytest.raises(ValueError, match="gemini-3.6-flash-high"):
+    with pytest.raises(ValueError, match="gemini-3.8-flash-high"):
         load_llm("gemini_oauth_code_assist", model="gemini-3.5-flash")
 
 
-@pytest.mark.parametrize("model", ["claude-opus-4-8"])
+@pytest.mark.parametrize(
+    "model",
+    ["claude-opus-4-8", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"],
+)
 def test_anthropic_opus_4_omits_default_temperature(model: str) -> None:
     llm = load_llm(
         "Anthropic",
@@ -711,9 +923,10 @@ def test_anthropic_opus_4_6_keeps_supported_sampling() -> None:
 
     kwargs = llm._get_all_kwargs(top_k=10)
 
-    assert kwargs["temperature"] == 0.2
-    assert kwargs["top_p"] == 0.6
-    assert kwargs["top_k"] == 10
+    payload = {**kwargs, **kwargs.get("extra_body", {})}
+    assert payload["temperature"] == 0.2
+    assert payload["top_p"] == 0.6
+    assert payload["top_k"] == 10
 
 
 def test_anthropic_sonnet_keeps_temperature() -> None:
@@ -727,7 +940,7 @@ def test_anthropic_sonnet_keeps_temperature() -> None:
     kwargs = llm._get_all_kwargs()
 
     assert kwargs["model"] == "claude-sonnet-4-6"
-    assert kwargs["temperature"] == 0.2
+    assert {**kwargs, **kwargs.get("extra_body", {})}["temperature"] == 0.2
 
 
 def test_anthropic_uses_a_2048_token_default() -> None:
@@ -755,6 +968,61 @@ def test_anthropic_profile_uses_the_shared_2048_token_default() -> None:
     assert llm.max_tokens == 2048
 
 
+@pytest.mark.parametrize(
+    "model", ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]
+)
+def test_anthropic_forced_tool_choice_models_use_text_structured_output(
+    monkeypatch, model: str
+) -> None:
+    from llama_index.core.base.llms.types import ChatMessage, ChatResponse
+    from llama_index.core.prompts import PromptTemplate
+    from llama_index.core.types import PydanticProgramMode
+    from pydantic import BaseModel
+
+    class StructuredResult(BaseModel):
+        value: str
+
+    llm = load_llm(
+        "Anthropic",
+        model=model,
+        api_key="stub",
+    )
+    monkeypatch.setattr(
+        type(llm),
+        "chat",
+        lambda _self, _messages, **_kwargs: ChatResponse(
+            message=ChatMessage(role="assistant", content='{"value":"OK"}')
+        ),
+    )
+
+    result = llm.structured_predict(
+        StructuredResult,
+        PromptTemplate("Return {value}."),
+        value="OK",
+    )
+
+    assert llm.pydantic_program_mode is PydanticProgramMode.LLM
+    assert result == StructuredResult(value="OK")
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]
+)
+def test_anthropic_forced_tool_choice_models_override_function_program_mode(
+    model: str,
+) -> None:
+    from llama_index.core.types import PydanticProgramMode
+
+    llm = load_llm(
+        "Anthropic",
+        model=model,
+        api_key="stub",
+        pydantic_program_mode=PydanticProgramMode.FUNCTION,
+    )
+
+    assert llm.pydantic_program_mode is PydanticProgramMode.LLM
+
+
 @pytest.mark.parametrize("max_tokens", [512, 4096])
 def test_anthropic_preserves_explicit_max_tokens(max_tokens: int) -> None:
     llm = load_llm(
@@ -771,6 +1039,9 @@ def test_anthropic_preserves_explicit_max_tokens(max_tokens: int) -> None:
 @pytest.mark.parametrize(
     ("model", "context_window"),
     [
+        ("claude-fable-5-1", 1_000_000),
+        ("claude-opus-5-5", 1_000_000),
+        ("claude-sonnet-5-5", 1_000_000),
         ("claude-opus-5", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
         ("claude-fable-5", 1_000_000),
@@ -797,7 +1068,14 @@ def test_anthropic_current_catalog_models_have_metadata(
 
 @pytest.mark.parametrize(
     "model",
-    ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"],
+    [
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
+    ],
 )
 def test_anthropic_claude_5_models_strip_all_sampling_overrides(model: str) -> None:
     llm = load_llm(
@@ -970,3 +1248,141 @@ def test_ollama_wizard_default_includes_context_window() -> None:
     from mobilerun.agent.providers.setup_service import DEFAULT_KWARGS_BY_VARIANT
 
     assert DEFAULT_KWARGS_BY_VARIANT["Ollama"] == {"context_window": 32768}
+
+
+@pytest.mark.parametrize("model", ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"])
+def test_gpt_6_sol_and_luna_forward_reasoning_without_a_default(model: str) -> None:
+    configured = load_llm(
+        "OpenAIResponses",
+        model=model,
+        api_key="stub",
+        reasoning_options={"effort": "low"},
+    )
+    unconfigured = load_llm("OpenAIResponses", model=model, api_key="stub")
+
+    assert configured._get_model_kwargs()["reasoning"] == {"effort": "low"}
+    assert "reasoning" not in unconfigured._get_model_kwargs()
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [
+        ("gpt-6-astra", "none"),
+        ("gpt-6.1-sol", "none"),
+        ("gpt-6-sol", "minimal"),
+        ("gpt-6-luna", "minimal"),
+    ],
+)
+def test_gpt_6_models_reject_unsupported_reasoning_effort(
+    model: str, effort: str
+) -> None:
+    llm = load_llm(
+        "OpenAIResponses",
+        model=model,
+        api_key="stub",
+        reasoning_options={"effort": effort},
+    )
+
+    with pytest.raises(ValueError, match=f"{model} does not support reasoning"):
+        llm._get_model_kwargs()
+
+
+@pytest.mark.parametrize(
+    ("model", "context_window"),
+    [("MiniMax-M3", 1_000_000), ("MiniMax-M2.7", 204_800)],
+)
+@pytest.mark.parametrize("provider", ["MiniMax", "OpenAILike"])
+def test_minimax_endpoint_gets_capabilities_and_split_reasoning(
+    provider: str, model: str, context_window: int
+) -> None:
+    llm = load_llm(
+        provider,
+        model=model,
+        api_key="stub",
+        api_base="https://api.minimax.io/v1",
+        additional_kwargs={"extra_body": {"custom": 1}},
+    )
+
+    assert llm.metadata.is_function_calling_model is True
+    assert llm.metadata.context_window == context_window
+    assert llm.pydantic_program_mode is PydanticProgramMode.LLM
+    assert llm.additional_kwargs["extra_body"] == {
+        "custom": 1,
+        "reasoning_split": True,
+    }
+
+
+def test_minimax_explicit_reasoning_split_is_preserved() -> None:
+    llm = load_llm(
+        "OpenAILike",
+        model="MiniMax-M3",
+        api_key="stub",
+        api_base="https://api.minimaxi.com/v1/",
+        additional_kwargs={"extra_body": {"reasoning_split": False}},
+    )
+
+    assert llm.additional_kwargs["extra_body"] == {"reasoning_split": False}
+
+
+def test_openai_like_non_minimax_endpoint_is_unchanged() -> None:
+    llm = load_llm(
+        "OpenAILike",
+        model="MiniMax-M3",
+        api_key="stub",
+        api_base="https://openrouter.example/v1",
+    )
+
+    assert "extra_body" not in (llm.additional_kwargs or {})
+    assert llm.metadata.is_function_calling_model is False
+
+
+@pytest.mark.parametrize("model", [None, "deepseek-flash", "deepseek-v4-pro"])
+def test_deepseek_uses_current_model_metadata(model: str | None) -> None:
+    kwargs = {"model": model} if model else {}
+    llm = load_llm("DeepSeek", api_key="stub", **kwargs)
+
+    assert llm.model == (model or "deepseek-flash")
+    assert llm.metadata.is_function_calling_model is True
+    assert llm.metadata.context_window == 1_048_576
+    assert llm.pydantic_program_mode is PydanticProgramMode.LLM
+
+
+@pytest.mark.parametrize("model", ["deepseek-chat", "deepseek-reasoner"])
+def test_deepseek_retired_aliases_are_not_function_calling_models(model: str) -> None:
+    llm = load_llm("DeepSeek", api_key="stub", model=model)
+
+    assert llm.metadata.is_function_calling_model is False
+
+
+@pytest.mark.parametrize("base_url", [None, "https://minimax-proxy.example/v1"])
+def test_minimax_alias_always_gets_minimax_defaults(base_url: str | None) -> None:
+    kwargs = {"base_url": base_url} if base_url else {}
+    llm = load_llm("MiniMax", api_key="stub", **kwargs)
+
+    assert llm.model == "MiniMax-M3"
+    assert llm.metadata.context_window == 1_000_000
+    assert llm.additional_kwargs["extra_body"] == {"reasoning_split": True}
+
+
+def test_responses_parser_keeps_each_message_once() -> None:
+    from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+
+    def message(text: str) -> ResponseOutputMessage:
+        return ResponseOutputMessage(
+            id=f"msg-{text}",
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[ResponseOutputText(type="output_text", text=text, annotations=[])],
+        )
+
+    llm = load_llm("OpenAIResponses", model="gpt-6-sol", api_key="stub")
+    parsed = type(llm)._parse_response_output(
+        [message("first"), message("second"), message("third")]
+    )
+
+    assert [block.text for block in parsed.message.blocks] == [
+        "first",
+        "second",
+        "third",
+    ]

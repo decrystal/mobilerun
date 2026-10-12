@@ -198,21 +198,28 @@ class WriterWorker:
         if not self.running:
             return
 
+        drain_task = asyncio.create_task(self.queue.join())
         try:
-            await asyncio.wait_for(self.queue.join(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"Writer timeout after {timeout}s, {self.queue.qsize()} jobs remaining"
-            )
+            done, _ = await asyncio.wait({drain_task}, timeout=timeout)
+            if not done:
+                logger.warning(
+                    f"Writer timeout after {timeout}s, {self.queue.qsize()} jobs remaining"
+                )
+        finally:
+            if not drain_task.done():
+                drain_task.cancel()
+                drain_task.add_done_callback(self._consume_worker_result)
+            self.running = False
+            if self.worker_task and not self.worker_task.done():
+                self.worker_task.cancel()
+                self.worker_task.add_done_callback(self._consume_worker_result)
 
-        self.running = False
-
-        if self.worker_task:
-            self.worker_task.cancel()
-            try:
-                await self.worker_task
-            except asyncio.CancelledError:
-                pass
+    @staticmethod
+    def _consume_worker_result(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
 
     async def _work_loop(self) -> None:
         while self.running:

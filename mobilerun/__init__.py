@@ -19,8 +19,16 @@ _logger.propagate = False
 
 # Import main classes for easier access
 from mobilerun.agent import ResultEvent  # noqa: E402
-from mobilerun.agent.droid import MobileAgent  # noqa: E402
+from mobilerun.agent.droid import MobileAgent, MobileAgentState  # noqa: E402
+from mobilerun.agent.utils.errors import HtmlErrorPageFilter  # noqa: E402
 from mobilerun.agent.utils.llm_picker import load_llm  # noqa: E402
+
+# llama-index's retry warnings include provider error bodies verbatim.
+for _retry_logger in (
+    "llama_index.llms.openai.utils",
+    "llama_index.llms.google_genai.utils",
+):
+    logging.getLogger(_retry_logger).addFilter(HtmlErrorPageFilter())
 
 # Import configuration classes
 from mobilerun.config_manager import (  # noqa: E402
@@ -53,6 +61,7 @@ from mobilerun.tools import AndroidDriver, DeviceDriver, RecordingDriver  # noqa
 __all__ = [
     # Agent
     "MobileAgent",
+    "MobileAgentState",
     "load_llm",
     "ResultEvent",
     # Tools / Drivers

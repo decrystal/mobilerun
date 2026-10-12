@@ -200,9 +200,10 @@ def _setup_langfuse_tracing(
             _fixed_encoder._mobilerun_pydantic_v2 = True
             _handler._encoder = _fixed_encoder
 
-        # STEP 4: Register preprocessing before Langfuse registers its exporter.
+        # STEP 4: Normalize private snapshots inside the SDK's processor chain.
         from mobilerun.telemetry.langfuse_processor import (
             LangfuseSpanProcessor,
+            _LangfuseTracerProvider,
             set_current_agent,
         )
 
@@ -214,7 +215,6 @@ def _setup_langfuse_tracing(
             or _langfuse_tracer_provider is not tracer_provider
         ):
             _langfuse_preprocessor = LangfuseSpanProcessor()
-            tracer_provider.add_span_processor(_langfuse_preprocessor)
             _langfuse_tracer_provider = tracer_provider
 
         # STEP 5: The public client owns the single exporter, queue, media uploads,
@@ -228,7 +228,9 @@ def _setup_langfuse_tracing(
             public_key=public_key,
             secret_key=secret_key,
             base_url=base_url,
-            tracer_provider=tracer_provider,
+            tracer_provider=_LangfuseTracerProvider(
+                tracer_provider, _langfuse_preprocessor
+            ),
             should_export_span=_export_all_spans,
         )
 
@@ -287,27 +289,32 @@ def _export_all_spans(_span) -> bool:
 
 
 def _provider_has_langfuse_processor(tracer_provider: object) -> bool:
-    """Detect an exporter installed before Mobilerun's required preprocessor."""
+    """Detect both directly registered and wrapped Langfuse processors."""
+    from mobilerun.telemetry.langfuse_processor import _LangfuseSpanProcessor
+
     return any(
-        type(processor).__module__.startswith("langfuse.")
+        isinstance(processor, _LangfuseSpanProcessor)
+        or type(processor).__module__.startswith("langfuse.")
         for processor in _provider_span_processors(tracer_provider)
     )
 
 
 def _provider_has_owned_langfuse_pipeline(tracer_provider: object) -> bool:
-    """Confirm exactly one SDK exporter follows Mobilerun's preprocessor."""
-    processors = _provider_span_processors(tracer_provider)
-    try:
-        preprocessor_index = processors.index(_langfuse_preprocessor)
-    except ValueError:
-        return False
+    """Confirm exactly one SDK processor uses our snapshot normalizer."""
+    from mobilerun.telemetry.langfuse_processor import _LangfuseSpanProcessor
 
-    exporter_indexes = [
-        index
-        for index, processor in enumerate(processors)
-        if type(processor).__module__.startswith("langfuse.")
+    processors = [
+        processor
+        for processor in _provider_span_processors(tracer_provider)
+        if isinstance(processor, _LangfuseSpanProcessor)
+        or type(processor).__module__.startswith("langfuse.")
     ]
-    return len(exporter_indexes) == 1 and preprocessor_index < exporter_indexes[0]
+    return (
+        len(processors) == 1
+        and isinstance(processors[0], _LangfuseSpanProcessor)
+        and processors[0].normalizer is _langfuse_preprocessor
+        and type(processors[0].processor).__module__.startswith("langfuse.")
+    )
 
 
 def _provider_span_processors(tracer_provider: object) -> tuple[object, ...]:

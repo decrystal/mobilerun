@@ -124,7 +124,7 @@ def clean_span(span_name: str):
                 )
                 try:
                     result = await func(*args, **kwargs)
-                except Exception as e:
+                except BaseException as e:
                     dispatcher.span_drop(
                         id_=span_id, bound_args=bound_args, instance=instance, err=e
                     )

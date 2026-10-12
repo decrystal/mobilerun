@@ -64,11 +64,11 @@ You can use this as a template to create cards for other apps (see "Creating Cus
 3. **Injection:** App card content is added to the agent's prompt
 4. **Guidance:** Agent uses the instructions to make better decisions
 
-**Technical note:** App cards are loaded asynchronously and cached in memory. Loading happens in the background and doesn't block agent execution.
+**Technical note:** App cards are cached in memory after the first load.
 
 ### When Are They Used?
 
-App cards are used by the **Manager Agent** when running in reasoning mode (`--reasoning` flag or `reasoning: true` in config):
+App cards are used by the **Manager Agent** when running in reasoning mode (`--reasoning` flag or `reasoning: true` in config), and the Executor sees the same card:
 
 ```bash
 # App cards enabled (Manager uses them for planning)
@@ -77,6 +77,8 @@ mobilerun run "Archive all unread emails" --reasoning
 # App cards not used (direct execution mode)
 mobilerun run "Tap the button"
 ```
+
+The stateless manager (`manager.stateless: true`) does not load app cards.
 
 ---
 
@@ -102,12 +104,24 @@ adb shell pm list packages | grep keyword
 
 ### Step 2: Create the Files
 
-Create the app cards directory and files:
+App cards live in one folder per platform, each with its own `app_cards.json`:
+
+```
+config/app_cards/
+├── android/
+│   ├── app_cards.json
+│   └── chrome.md
+└── ios/
+    ├── app_cards.json
+    └── chrome.md
+```
+
+An `app_cards.json` placed directly in `config/app_cards/` is not read; Mobilerun logs a warning and ignores it.
 
 ```bash
-mkdir -p config/app_cards
-touch config/app_cards/app_cards.json
-touch config/app_cards/chrome.md
+mkdir -p config/app_cards/android
+touch config/app_cards/android/app_cards.json
+touch config/app_cards/android/chrome.md
 ```
 
 **Example structure:**
@@ -137,7 +151,7 @@ touch config/app_cards/chrome.md
 
 ### Step 3: Register the App Card
 
-Add your app mapping to `config/app_cards/app_cards.json`:
+Add your app mapping to `config/app_cards/android/app_cards.json` (or `ios/app_cards.json` for iOS bundle ids):
 
 ```json
 {
@@ -155,6 +169,12 @@ Add your app mapping to `config/app_cards/app_cards.json`:
 }
 ```
 
+Card paths are relative to the platform folder, or absolute.
+
+**Same app id on Android and iOS:**
+
+Some apps, like TikTok (`com.zhiliaoapp.musically`), use the same id on both platforms. Add the id to both `android/app_cards.json` and `ios/app_cards.json`, each pointing to its own card. Mobilerun reads the folder that matches the device.
+
 ### Step 4: Test
 
 ```bash
@@ -163,7 +183,7 @@ mobilerun run "Open Chrome and search for mobilerun" --reasoning --debug
 
 Look for this log message:
 ```
-Loaded app card for com.android.chrome from config/app_cards/chrome.md
+Loaded app card for com.android.chrome from .../config/app_cards/android/chrome.md
 ```
 
 ---
@@ -178,6 +198,8 @@ agent:
     enabled: true
     app_cards_dir: config/app_cards
 ```
+
+A relative `app_cards_dir` is read from the working directory when it has `android/app_cards.json` or `ios/app_cards.json`, and otherwise from the cards bundled with Mobilerun. A working-directory folder replaces the bundled cards; to keep the Gmail card, add its entry and `gmail.md` to that folder's `android/`.
 
 **To disable:**
 ```yaml
@@ -236,7 +258,7 @@ with a floating action button, which is a circular button...
    adb shell dumpsys window windows | grep -E 'mCurrentFocus'
    ```
 
-2. **Is the mapping correct in app_cards.json?**
+2. **Is the mapping correct in the platform's app_cards.json?**
    ```json
    {
      "com.your.app": "yourapp.md"
@@ -245,7 +267,7 @@ with a floating action button, which is a circular button...
 
 3. **Does the markdown file exist?**
    ```bash
-   ls config/app_cards/yourapp.md
+   ls config/app_cards/android/yourapp.md
    ```
 
 4. **Are app cards enabled?**
@@ -270,8 +292,8 @@ mobilerun run "Open Gmail" --reasoning --debug
 
 Look for these log messages:
 ```
-Loaded app_cards.json with 2 entries
-Loaded app card for com.google.android.gm from config/app_cards/gmail.md
+Loaded android/app_cards.json with 2 entries
+Loaded app card for com.google.android.gm from .../config/app_cards/android/gmail.md
 ```
 
 ---

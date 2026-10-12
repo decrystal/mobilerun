@@ -1,8 +1,12 @@
 import pytest
 from llama_index.core.base.llms.types import ChatMessage, MessageRole
 
+from mobilerun.agent.providers.anthropic import ANTHROPIC_HIGHRES_MODELS
 from mobilerun.agent.utils.oauth.anthropic_oauth_llm import (
+    DEFAULT_CC_VERSION,
+    DEFAULT_CLAUDE_CODE_VERSION,
     DEFAULT_MAX_TOKENS,
+    DEFAULT_USER_AGENT,
     AnthropicOAuthLLM,
 )
 
@@ -23,13 +27,15 @@ class _FakeResponse:
 class _CapturingSession:
     def __init__(self):
         self.payload = None
+        self.headers = None
 
     def post(self, url, headers, json, timeout):
         self.payload = dict(json)
+        self.headers = dict(headers)
         return _FakeResponse()
 
 
-def _payload_for(**kwargs):
+def _session_for(**kwargs):
     llm = AnthropicOAuthLLM(
         access_token="test-token",
         credential_path=None,
@@ -38,7 +44,11 @@ def _payload_for(**kwargs):
     session = _CapturingSession()
     llm._session = session
     llm.chat([ChatMessage(role=MessageRole.USER, content="hello")])
-    return session.payload
+    return session
+
+
+def _payload_for(**kwargs):
+    return _session_for(**kwargs).payload
 
 
 def test_default_max_tokens_is_8192():
@@ -46,10 +56,10 @@ def test_default_max_tokens_is_8192():
     assert AnthropicOAuthLLM(credential_path=None).metadata.num_output == 8192
 
 
-def test_default_opus_payload_sends_max_tokens_without_temperature():
+def test_default_sonnet_payload_sends_max_tokens_without_temperature():
     payload = _payload_for()
 
-    assert payload["model"] == "claude-opus-4-7"
+    assert payload["model"] == "claude-sonnet-5"
     assert payload["max_tokens"] == 8192
     assert "temperature" not in payload
 
@@ -65,8 +75,11 @@ def test_opus_4_8_payload_sends_max_tokens_without_temperature():
 @pytest.mark.parametrize(
     ("model", "context_window"),
     [
+        ("claude-opus-5-5", 1_000_000),
+        ("claude-sonnet-5-5", 1_000_000),
         ("claude-opus-5", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
+        ("claude-fable-5-1", 1_000_000),
         ("claude-fable-5", 1_000_000),
         ("claude-opus-4-8", 1_000_000),
         ("claude-opus-4-7", 1_000_000),
@@ -85,8 +98,11 @@ def test_current_model_metadata_has_verified_context_window(model, context_windo
 @pytest.mark.parametrize(
     "model",
     [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
         "claude-opus-5",
         "claude-sonnet-5",
+        "claude-fable-5-1",
         "claude-fable-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
@@ -112,6 +128,71 @@ def test_models_without_sampling_strip_all_final_payload_overrides(model):
 
     assert session.payload["model"] == model
     assert {"temperature", "top_p", "top_k"}.isdisjoint(session.payload)
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]
+)
+def test_current_models_use_high_resolution_vision_budget(model):
+    assert model in ANTHROPIC_HIGHRES_MODELS
+
+
+def test_fable_5_1_uses_current_claude_code_identity_defaults():
+    session = _session_for(model="claude-fable-5-1")
+
+    assert DEFAULT_CLAUDE_CODE_VERSION == "2.1.281"
+    assert DEFAULT_USER_AGENT == "claude-cli/2.1.281"
+    assert DEFAULT_CC_VERSION == "2.1.281.000"
+    assert session.headers["User-Agent"] == DEFAULT_USER_AGENT
+    assert f"cc_version={DEFAULT_CC_VERSION};" in session.payload["system"][0]["text"]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-4-7",
+        "claude-haiku-4-5",
+    ],
+)
+def test_oauth_structured_predict_uses_text_pydantic_extraction(monkeypatch, model):
+    from llama_index.core.base.llms.types import ChatResponse
+    from llama_index.core.prompts import PromptTemplate
+    from pydantic import BaseModel
+
+    class StructuredResult(BaseModel):
+        value: str
+
+    llm = AnthropicOAuthLLM(
+        model=model,
+        access_token="test-token",
+        credential_path=None,
+    )
+    monkeypatch.setattr(
+        type(llm),
+        "chat",
+        lambda _self, _messages, **_kwargs: ChatResponse(
+            message=ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content='{"value":"OK"}',
+            )
+        ),
+    )
+
+    result = llm.structured_predict(
+        StructuredResult,
+        PromptTemplate("Return {value}."),
+        value="OK",
+    )
+
+    assert llm.metadata.is_function_calling_model is False
+    assert result == StructuredResult(value="OK")
+    assert (
+        AnthropicOAuthLLM(credential_path=None).metadata.is_function_calling_model
+        is False
+    )
 
 
 @pytest.mark.parametrize("model", ["claude-opus-4-6", "claude-sonnet-4-6"])
@@ -226,3 +307,7 @@ def test_system_message_text_reaches_system_blocks():
     system_texts = [block["text"] for block in payload["system"]]
     assert "be terse" in system_texts
     assert all(m["role"] != "system" for m in payload["messages"])
+
+
+def test_default_timeout_covers_unstreamed_thinking_replies():
+    assert AnthropicOAuthLLM(credential_path=None).timeout == 60.0

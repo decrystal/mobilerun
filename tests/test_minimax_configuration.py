@@ -36,7 +36,7 @@ def test_minimax_registry_uses_current_global_endpoint() -> None:
     assert variant.models == (
         "MiniMax-M3",
         "MiniMax-M2.7",
-        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.7-highspeed",
     )
     assert MINIMAX_CHINA_BASE_URL == "https://api.minimaxi.com/v1"
     assert MINIMAX_LEGACY_BASE_URL == "https://api.minimaxi.chat/v1"
@@ -301,8 +301,12 @@ def test_minimax_wizard_defaults_to_m3_for_each_region(
     state = ConfigureWizardState(family_id="minimax")
     captured = {}
 
-    def choose_default_model(models, *, default_model, allow_back=True):
+    def choose_default_model(
+        models, *, family_id, auth_mode, default_model, allow_back=True
+    ):
         captured["models"] = models
+        captured["family_id"] = family_id
+        captured["auth_mode"] = auth_mode
         captured["default_model"] = default_model
         captured["allow_back"] = allow_back
         return default_model
@@ -344,6 +348,8 @@ def test_minimax_wizard_defaults_to_m3_for_each_region(
 
     assert configured is True
     assert captured["models"][0] == "MiniMax-M3"
+    assert captured["family_id"] == "minimax"
+    assert captured["auth_mode"] == "api_key"
     assert captured["default_model"] == "MiniMax-M3"
     assert state.selected_model == "MiniMax-M3"
     for profile in config.llm_profiles.values():

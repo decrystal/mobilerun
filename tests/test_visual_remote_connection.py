@@ -151,7 +151,7 @@ class ScreenshotOnlyStateProviderTest(unittest.TestCase):
         self.assertIn("1000x2000", state.formatted_text)
         self.assertIn("(0,0) is top-left", state.formatted_text)
         self.assertIn("(999,1999) is bottom-right", state.formatted_text)
-        self.assertIn("scroll it toward the middle", state.formatted_text)
+        self.assertNotIn("scroll it toward the middle", state.formatted_text)
         self.assertNotIn("destructive controls", state.formatted_text)
         self.assertNotIn("Do not tap toggles", state.formatted_text)
         self.assertIn("direct_text_input", provider.supported)

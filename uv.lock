@@ -1689,7 +1689,7 @@ wheels = [
 
 [[package]]
 name = "mobilerun"
-version = "0.6.17"
+version = "0.6.22"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -1777,7 +1777,7 @@ requires-dist = [
     { name = "llama-index-workflows", specifier = ">=2.16.0,<3.0.0" },
     { name = "mcp", specifier = ">=1.28.1,<2.0.0" },
     { name = "mobilerun", extras = ["langfuse"], marker = "extra == 'dev'" },
-    { name = "mobilerun-core-local", extras = ["cloud"], specifier = ">=0.6.0" },
+    { name = "mobilerun-core-local", extras = ["cloud"], specifier = ">=0.6.1" },
     { name = "mobilerun-sdk", specifier = ">=3.2.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "openinference-instrumentation-llama-index", marker = "extra == 'langfuse'", specifier = ">=3.0.0" },
@@ -1789,7 +1789,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13.0" },
     { name = "safety", marker = "extra == 'dev'", specifier = ">=3.2.11" },
 ]
-provides-extras = ["jev", "anthropic", "dev", "langfuse"]
+provides-extras = ["anthropic", "deepseek", "dev", "jev", "langfuse"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1805,7 +1805,7 @@ dev = [
 
 [[package]]
 name = "mobilerun-core-local"
-version = "0.6.0"
+version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "async-adbutils" },
@@ -1813,9 +1813,9 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b9/1a/17331235836f85ebfc7ef652ed392d051c9e8dfbb3f2c224e2f4122100e2/mobilerun_core_local-0.6.0.tar.gz", hash = "sha256:6ee483d1c325c2a9ebd577d05291aacc87ad9bb9483eebd4a7028643f1c4417f", size = 71100, upload-time = "2026-07-31T20:07:15.473Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/a3/b34fbdaecd51c0aafe5eb4eda661c442105eb6ffedc26f7a897e508b5b9f/mobilerun_core_local-0.6.1.tar.gz", hash = "sha256:e27becfc1cfb12b99bf82d1daad89b975c0e4e16923a318e26dfe472abd2c8ec", size = 77292, upload-time = "2026-10-05T12:02:07.751Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/7f/be52c36593c6350bda1f1e78b959b915682790e54c6c28467f57386a246d/mobilerun_core_local-0.6.0-py3-none-any.whl", hash = "sha256:fb67820a44dacef84b6a1baa96817b69e4de13a99ba80338cff85eda41e70cf1", size = 50896, upload-time = "2026-07-31T20:07:14.197Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/77/38337b2088d32a6b3cd26d756ba42321a55dc013bb59aa1a0f338ad64a63/mobilerun_core_local-0.6.1-py3-none-any.whl", hash = "sha256:a3a7948dfece3bdabb73c5aa6bf93eb8a020da3d0cd85ddac1b7310a70cfcc34", size = 51979, upload-time = "2026-10-05T12:02:06.358Z" },
 ]
 
 [package.optional-dependencies]

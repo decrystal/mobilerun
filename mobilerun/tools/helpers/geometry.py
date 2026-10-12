@@ -10,6 +10,36 @@ def rects_overlap(a: Bounds, b: Bounds) -> bool:
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
+def find_uncovered_point(
+    bounds: Bounds, blockers: List[Bounds]
+) -> Optional[Tuple[int, int]]:
+    """Return the center of the largest remaining rectangle, including narrow gaps."""
+    regions = [bounds] if bounds[0] < bounds[2] and bounds[1] < bounds[3] else []
+    for blocker in blockers:
+        remaining = []
+        for left, top, right, bottom in regions:
+            bl = max(left, blocker[0])
+            bt = max(top, blocker[1])
+            br = min(right, blocker[2])
+            bb = min(bottom, blocker[3])
+            if bl >= br or bt >= bb:
+                remaining.append((left, top, right, bottom))
+                continue
+            for region in (
+                (left, top, right, bt),
+                (left, bb, right, bottom),
+                (left, bt, bl, bb),
+                (br, bt, right, bb),
+            ):
+                if region[0] < region[2] and region[1] < region[3]:
+                    remaining.append(region)
+        regions = remaining
+    if not regions:
+        return None
+    left, top, right, bottom = max(regions, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))
+    return (left + right) // 2, (top + bottom) // 2
+
+
 def find_clear_point(
     bounds: Bounds,
     blockers: List[Bounds],

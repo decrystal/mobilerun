@@ -72,7 +72,7 @@ class StealthUIState(UIState):
         x = max(left + 2, min(x, right - 2))
         y = max(top + 2, min(y, bottom - 2))
 
-        return x, y
+        return self._avoid_tap_blockers(element, (x, y))
 
     def get_clear_point(self, index: int) -> Tuple[int, int]:
         """Find a clear tap point for *index*, then randomize around it.

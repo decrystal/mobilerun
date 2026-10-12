@@ -42,6 +42,7 @@ from mobilerun.agent.manager.prompts import (
 )
 from mobilerun.agent.usage import get_usage_from_response
 from mobilerun.agent.utils.chat_utils import filter_empty_messages
+from mobilerun.agent.utils.errors import describe_error
 from mobilerun.agent.utils.inference import acall_with_retries
 from mobilerun.agent.utils.prompt_resolver import PromptResolver
 from mobilerun.agent.utils.tracing_setup import record_langfuse_screenshot
@@ -66,6 +67,12 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("mobilerun")
+
+
+def _card_platform(platform: str | None) -> str | None:
+    """Return "android" or "ios" for app card lookups, or None."""
+    value = (platform or "").lower()
+    return value if value in ("android", "ios") else None
 
 
 class ManagerAgent(Workflow):
@@ -125,7 +132,10 @@ class ManagerAgent(Workflow):
 
             class DisabledProvider(AppCardProvider):
                 async def load_app_card(
-                    self, package_name: str, instruction: str = ""
+                    self,
+                    package_name: str,
+                    instruction: str = "",
+                    platform: str | None = None,
                 ) -> str:
                     return ""
 
@@ -167,6 +177,21 @@ class ManagerAgent(Workflow):
             return LocalAppCardProvider(
                 app_cards_dir=self.app_card_config.app_cards_dir
             )
+
+    async def _load_app_card(self) -> None:
+        """Load the app card for the foreground app on the current platform."""
+        if not self.app_card_config.enabled:
+            self.shared_state.app_card = ""
+            return
+        try:
+            self.shared_state.app_card = await self.app_card_provider.load_app_card(
+                package_name=self.shared_state.current_package_name,
+                instruction=self.shared_state.instruction,
+                platform=_card_platform(self.shared_state.platform),
+            )
+        except Exception as e:
+            logger.warning(f"Error loading app card: {e}")
+            self.shared_state.app_card = ""
 
     async def _build_system_prompt(self) -> str:
         """Build system prompt with all context."""
@@ -351,7 +376,7 @@ class ManagerAgent(Workflow):
                 output = response.message.content
                 parsed = parse_manager_response(output)
             except Exception as e:
-                logger.error(f"LLM retry failed: {e}")
+                logger.error(f"LLM retry failed: {describe_error(e)}")
                 raise ManagerResponseValidationError(validation_error) from e
 
         validation = validate_manager_response(parsed)
@@ -418,18 +443,7 @@ class ManagerAgent(Workflow):
         # Stream UI state for trajectory
         ctx.write_event_to_stream(RecordUIStateEvent(ui_state=ui_state.elements))
 
-        # Load app card
-        if self.app_card_config.enabled:
-            try:
-                self.shared_state.app_card = await self.app_card_provider.load_app_card(
-                    package_name=self.shared_state.current_package_name,
-                    instruction=self.shared_state.instruction,
-                )
-            except Exception as e:
-                logger.warning(f"Error loading app card: {e}")
-                self.shared_state.app_card = ""
-        else:
-            self.shared_state.app_card = ""
+        await self._load_app_card()
 
         self.shared_state.screenshot = screenshot
 
@@ -487,8 +501,9 @@ class ManagerAgent(Workflow):
             )
             output = response.message.content
         except Exception as e:
-            logger.error(f"LLM call failed: {e}")
-            raise RuntimeError(f"Error calling LLM in manager: {e}") from e
+            error = describe_error(e)
+            logger.error(f"LLM call failed: {error}")
+            raise RuntimeError(f"Error calling LLM in manager: {error}") from e
 
         # Extract usage
         usage = None

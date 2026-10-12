@@ -2,12 +2,20 @@ import base64
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.attributes import BoundedAttributes
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import (
+    ReadableSpan,
+    SpanLimits,
+    SpanProcessor,
+    TracerProvider,
+)
 from opentelemetry.sdk.trace.export import (
     SimpleSpanProcessor,
     SpanExporter,
@@ -20,7 +28,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from mobilerun.agent.utils import tracing_setup
 from mobilerun.config_manager.config_manager import TracingConfig
 from mobilerun.telemetry import langfuse_processor
-from mobilerun.telemetry.langfuse_processor import LangfuseSpanProcessor
+from mobilerun.telemetry.langfuse_processor import (
+    LangfuseSpanProcessor,
+    _LangfuseSpanProcessor,
+    _LangfuseTracerProvider,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +124,7 @@ def _langfuse_config(**kwargs):
     return TracingConfig(**values)
 
 
-def test_setup_is_concurrent_safe_and_registers_preprocessor_first(monkeypatch):
+def test_setup_is_concurrent_safe_and_wraps_one_sdk_processor(monkeypatch):
     provider, clients, exporter, instrument_calls = _install_fake_setup(monkeypatch)
     config = _langfuse_config()
 
@@ -121,8 +133,10 @@ def test_setup_is_concurrent_safe_and_registers_preprocessor_first(monkeypatch):
 
     assert len(clients) == 1
     assert instrument_calls == [True]
-    assert isinstance(provider.processors[0], LangfuseSpanProcessor)
-    assert provider.processors[1:] == [exporter]
+    assert len(provider.processors) == 1
+    assert isinstance(provider.processors[0], _LangfuseSpanProcessor)
+    assert provider.processors[0].processor is exporter
+    assert provider.processors[0].normalizer is tracing_setup._langfuse_preprocessor
     assert clients[0].kwargs["should_export_span"](object()) is True
     assert tracing_setup._tracing_initialized is True
     assert tracing_setup._tracing_provider == "langfuse"
@@ -147,7 +161,10 @@ def test_auth_diagnostic_does_not_retry_or_leak_details(
     assert "sensitive-detail" not in caplog.text
 
 
-def test_failed_client_construction_cannot_accumulate_processors(monkeypatch):
+@pytest.mark.parametrize("register_before_failure", [False, True])
+def test_failed_client_construction_cannot_accumulate_processors(
+    monkeypatch, register_before_failure
+):
     import langfuse
     from openinference.instrumentation import llama_index as instrumentation
     from openinference.instrumentation.llama_index import _handler
@@ -162,6 +179,8 @@ def test_failed_client_construction_cannot_accumulate_processors(monkeypatch):
         def __init__(self, **_kwargs):
             nonlocal construction_count
             construction_count += 1
+            if register_before_failure:
+                _kwargs["tracer_provider"].add_span_processor(SpanProcessor())
             raise ValueError("sensitive-detail")
 
     monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
@@ -173,21 +192,24 @@ def test_failed_client_construction_cannot_accumulate_processors(monkeypatch):
     tracing_setup.setup_tracing(_langfuse_config())
 
     assert construction_count == 1
-    assert len(provider.processors) == 1
-    assert isinstance(provider.processors[0], LangfuseSpanProcessor)
+    assert len(provider.processors) == int(register_before_failure)
+    if register_before_failure:
+        assert isinstance(provider.processors[0], _LangfuseSpanProcessor)
     assert tracing_setup._tracing_initialized is False
 
 
-def test_setup_rejects_preexisting_langfuse_exporter(monkeypatch, caplog):
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_setup_rejects_preexisting_langfuse_exporter(monkeypatch, caplog, wrapped):
     provider, clients, _exporter, _calls = _install_fake_setup(monkeypatch)
 
     class ExistingLangfuseExporter:
         pass
 
     ExistingLangfuseExporter.__module__ = "langfuse._client.span_processor"
-    provider._active_span_processor = SimpleNamespace(
-        _span_processors=(ExistingLangfuseExporter(),)
-    )
+    processor = ExistingLangfuseExporter()
+    if wrapped:
+        processor = _LangfuseSpanProcessor(processor, LangfuseSpanProcessor())
+    provider._active_span_processor = SimpleNamespace(_span_processors=(processor,))
 
     tracing_setup.setup_tracing(_langfuse_config())
 
@@ -206,8 +228,7 @@ def test_setup_rejects_same_key_client_owned_by_another_provider(monkeypatch, ca
     tracing_setup.setup_tracing(_langfuse_config())
 
     assert len(clients) == 1
-    assert len(provider.processors) == 1
-    assert isinstance(provider.processors[0], LangfuseSpanProcessor)
+    assert provider.processors == []
     assert tracing_setup._langfuse_client is None
     assert tracing_setup._tracing_initialized is False
     assert "pk-test" not in caplog.text
@@ -270,8 +291,9 @@ def test_processor_normalizes_agent_and_llm_metadata():
     )
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
-    provider.add_span_processor(LangfuseSpanProcessor(agent))
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    _LangfuseTracerProvider(provider, LangfuseSpanProcessor(agent)).add_span_processor(
+        SimpleSpanProcessor(exporter)
+    )
 
     with provider.get_tracer("test").start_as_current_span("MobileAgent.run"):
         pass
@@ -288,6 +310,7 @@ def test_processor_normalizes_agent_and_llm_metadata():
         "temperature": 0.2,
     }
     assert attrs["langfuse.trace.tags"] == ("fast",)
+    provider.shutdown()
 
 
 class _CollectingExporter(SpanExporter):
@@ -302,48 +325,247 @@ class _CollectingExporter(SpanExporter):
         pass
 
 
+@pytest.mark.parametrize(
+    "span_name", ["droidrun.screenshot", "LLM.achat", "LLM.acomplete"]
+)
 def test_public_v4_client_exports_custom_span_once_and_uploads_native_media(
     monkeypatch,
+    span_name,
 ):
     from langfuse import Langfuse
     from langfuse._task_manager.media_manager import MediaManager
 
     media_jobs = []
 
-    def record_media(_self, **kwargs):
-        media_jobs.append(kwargs)
+    def record_media(_self, *, data):
+        media_jobs.append(data)
 
-    monkeypatch.setattr(MediaManager, "_process_media", record_media)
+    monkeypatch.setattr(MediaManager, "_process_upload_media_job", record_media)
     provider = TracerProvider()
     exporter = _CollectingExporter()
     preprocessor = LangfuseSpanProcessor()
-    provider.add_span_processor(preprocessor)
+    before, after = InMemorySpanExporter(), InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(before))
     client = Langfuse(
         public_key=f"pk-test-{uuid4()}",
         secret_key="sk-test",
         base_url="http://127.0.0.1:1",
-        tracer_provider=provider,
+        tracer_provider=_LangfuseTracerProvider(provider, preprocessor),
         span_exporter=exporter,
         should_export_span=lambda _span: True,
     )
+    provider.add_span_processor(SimpleSpanProcessor(after))
 
     try:
         image = base64.b64encode(b"png-bytes").decode()
+        if span_name == "droidrun.screenshot":
+            original_attrs = {
+                "droidrun.screenshot.image_base64": image,
+                "droidrun.screenshot.mime_type": "image/png",
+            }
+            media_field = "langfuse.observation.output"
+        else:
+            messages = json.dumps(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "blocks": [
+                                {
+                                    "block_type": "image",
+                                    "image": image,
+                                    "image_mimetype": "image/png",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+            original_attrs = (
+                {"llm.prompts": (messages,)}
+                if span_name.endswith("complete")
+                else {"input.value": messages}
+            )
+            media_field = "langfuse.observation.input"
         with provider.get_tracer("mobilerun.custom").start_as_current_span(
-            "droidrun.screenshot"
+            span_name, attributes=original_attrs
         ) as span:
-            span.set_attribute("droidrun.screenshot.image_base64", image)
-            span.set_attribute("droidrun.screenshot.mime_type", "image/png")
+            started_attrs = dict(span.attributes)
         client.flush()
+        assert provider.force_flush() is True
 
         assert len(exporter.spans) == 1
         attrs = exporter.spans[0].attributes
         assert "droidrun.screenshot.image_base64" not in attrs
-        assert "@@@langfuseMedia:type=image/png" in attrs["langfuse.observation.output"]
+        assert "@@@langfuseMedia:type=image/png" in attrs[media_field]
+        assert image not in json.dumps(dict(attrs))
         assert len(media_jobs) == 1
-        assert preprocessor.force_flush() is True
+        assert media_jobs[0]["content_bytes"] == b"png-bytes"
+        assert media_jobs[0]["media_id"] in attrs[media_field]
+        assert media_jobs[0]["observation_id"] == format(
+            exporter.spans[0].context.span_id, "016x"
+        )
+        original = before.get_finished_spans()[0]
+        assert after.get_finished_spans()[0] is original
+        assert original.attributes == started_attrs
+        assert media_field not in original.attributes
+        assert exporter.spans[0].context == original.context
     finally:
         client.shutdown()
+        provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("name", "attributes", "expected_input", "expected_output"),
+    [
+        (
+            "LLM.achat",
+            {
+                "input.value": '{"messages": [{"role": "user", "blocks": [{"block_type": "text", "text": "hi"}]}]}',
+                "output.value": "hello",
+            },
+            {"messages": [{"role": "user", "content": "hi"}]},
+            "hello",
+        ),
+        (
+            "LLM.astream_complete",
+            {"llm.prompts": ("hello",), "output.value": "world"},
+            "hello",
+            "world",
+        ),
+        (
+            "MobileAgent.run",
+            {"input.value": "internal", "output.value": "done"},
+            None,
+            "done",
+        ),
+        ("step_done", {}, None, None),
+    ],
+)
+def test_frozen_span_normalization(name, attributes, expected_input, expected_output):
+    original = ReadableSpan(name=name, attributes=MappingProxyType(attributes))
+    processor = Mock(spec=SpanProcessor)
+    _LangfuseSpanProcessor(processor, LangfuseSpanProcessor()).on_end(original)
+    processor.on_end.assert_called_once()
+    snapshot = processor.on_end.call_args.args[0]
+    assert snapshot is not original
+    assert dict(original.attributes) == attributes
+    attrs = snapshot.attributes
+    actual_input = attrs.get("langfuse.observation.input")
+    if isinstance(expected_input, dict):
+        actual_input = json.loads(actual_input)
+    assert actual_input == expected_input
+    assert attrs.get("langfuse.observation.output") == expected_output
+    assert "input.value" not in attrs
+    assert "output.value" not in attrs
+    if name.endswith("_done"):
+        assert attrs["langfuse.observation.level"] == "DEBUG"
+
+
+def test_snapshot_preserves_span_metadata_and_dropped_counts():
+    provider = TracerProvider(
+        resource=Resource.create({"service.name": "snapshot-test"}),
+        span_limits=SpanLimits(max_attributes=2, max_events=1, max_links=1),
+    )
+    original_exporter, normalized_exporter = (
+        InMemorySpanExporter(),
+        InMemorySpanExporter(),
+    )
+    provider.add_span_processor(SimpleSpanProcessor(original_exporter))
+    _LangfuseTracerProvider(provider, LangfuseSpanProcessor()).add_span_processor(
+        SimpleSpanProcessor(normalized_exporter)
+    )
+    tracer = provider.get_tracer("test-library", "1.2.3", "https://schema.example")
+    try:
+        with tracer.start_as_current_span("parent") as parent:
+            links = [trace.Link(parent.get_span_context()) for _ in range(2)]
+            with tracer.start_as_current_span("child", links=links) as span:
+                span.set_attributes(
+                    {"dropped": "yes", "kept": "yes", "output.value": "result"}
+                )
+                span.add_event("dropped-event")
+                span.add_event("kept-event", {"event-key": "value"})
+                span.set_status(trace.Status(trace.StatusCode.ERROR, "test-status"))
+        original = original_exporter.get_finished_spans()[0]
+        snapshot = normalized_exporter.get_finished_spans()[0]
+        for field in (
+            "name",
+            "context",
+            "parent",
+            "resource",
+            "kind",
+            "start_time",
+            "end_time",
+            "status",
+            "events",
+            "links",
+            "instrumentation_scope",
+            "dropped_attributes",
+            "dropped_events",
+            "dropped_links",
+        ):
+            assert getattr(snapshot, field) == getattr(original, field), field
+        with pytest.warns(DeprecationWarning, match="instrumentation_scope"):
+            assert snapshot.instrumentation_info == original.instrumentation_info
+        assert (
+            snapshot.dropped_attributes,
+            snapshot.dropped_events,
+            snapshot.dropped_links,
+        ) == (1, 1, 1)
+        assert original.attributes == {"kept": "yes", "output.value": "result"}
+        assert snapshot.attributes == {
+            "kept": "yes",
+            "langfuse.observation.output": "result",
+        }
+    finally:
+        provider.shutdown()
+
+
+def test_snapshot_preserves_extended_attributes():
+    attributes = BoundedAttributes(
+        attributes={"custom": {"nested": ["value"]}, "output.value": "done"},
+        immutable=True,
+        extended_attributes=True,
+    )
+    original = ReadableSpan(name="span", attributes=attributes)
+    processor = Mock(spec=SpanProcessor)
+    _LangfuseSpanProcessor(processor, LangfuseSpanProcessor()).on_end(original)
+    snapshot = processor.on_end.call_args.args[0]
+    assert snapshot.attributes["custom"] == original.attributes["custom"]
+    assert original.attributes["output.value"] == "done"
+    assert snapshot.attributes["langfuse.observation.output"] == "done"
+
+
+def test_adapter_delegates_tracing_and_lifecycle():
+    provider = TracerProvider()
+    adapter = _LangfuseTracerProvider(provider, LangfuseSpanProcessor())
+    processor = Mock(spec=SpanProcessor)
+    processor.force_flush.return_value = False
+    adapter.add_span_processor(processor)
+    with adapter.get_tracer("test").start_as_current_span("span") as span:
+        pass
+    processor.on_start.assert_called_once_with(span, None)
+    processor._on_ending.assert_called_once_with(span)
+    processor.on_end.assert_called_once()
+    assert adapter.force_flush(123) is False
+    assert processor.force_flush.call_count == 1
+    # TracerProvider subtracts elapsed time from its flush deadline.
+    assert 0 <= processor.force_flush.call_args.args[0] <= 123
+    adapter.shutdown()
+    processor.shutdown.assert_called_once()
+
+
+def test_owned_pipeline_rejects_duplicate_or_foreign_normalizers(monkeypatch):
+    provider, _clients, exporter, _calls = _install_fake_setup(monkeypatch)
+    tracing_setup.setup_tracing(_langfuse_config())
+    assert tracing_setup._provider_has_owned_langfuse_pipeline(provider)
+    owned = provider.processors[0]
+    provider.processors.append(exporter)
+    assert not tracing_setup._provider_has_owned_langfuse_pipeline(provider)
+    provider.processors[:] = [_LangfuseSpanProcessor(exporter, LangfuseSpanProcessor())]
+    assert not tracing_setup._provider_has_owned_langfuse_pipeline(provider)
+    provider.processors[:] = [owned, owned]
+    assert not tracing_setup._provider_has_owned_langfuse_pipeline(provider)
 
 
 def test_native_image_size_and_error_handling(monkeypatch, caplog):

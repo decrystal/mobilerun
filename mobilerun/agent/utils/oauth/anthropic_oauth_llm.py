@@ -62,8 +62,14 @@ DEFAULT_SETUP_TOKEN_SCOPE = "user:inference"
 DEFAULT_REFRESH_SCOPE = "user:inference user:profile user:file_upload user:mcp_servers user:sessions:claude_code"
 DEFAULT_OAUTH_BETA = "oauth-2025-04-20"
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_CC_VERSION = "2.1.85.000"
+# Model access is Claude Code version-gated, so keep the HTTP user agent and
+# billing marker derived from the same verified-compatible client version.
+DEFAULT_CLAUDE_CODE_VERSION = "2.1.281"
+DEFAULT_USER_AGENT = f"claude-cli/{DEFAULT_CLAUDE_CODE_VERSION}"
+DEFAULT_CC_VERSION = f"{DEFAULT_CLAUDE_CODE_VERSION}.000"
 DEFAULT_CC_ENTRYPOINT = "cli"
+# Replies are not streamed, and always-on thinking makes them slower.
+DEFAULT_TIMEOUT_SECONDS = 60.0
 _IGNORED_REQUEST_KWARGS = {
     "formatted",
 }
@@ -131,7 +137,7 @@ class AnthropicOAuthLLM(CustomLLM):
     model: str = Field(default=DEFAULT_MODEL, description="Anthropic model id.")
     max_tokens: Optional[int] = Field(default=DEFAULT_MAX_TOKENS, gt=0)
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
-    timeout: float = Field(default=30.0, gt=0)
+    timeout: float = Field(default=DEFAULT_TIMEOUT_SECONDS, gt=0)
 
     access_token: Optional[str] = Field(default=None, description="OAuth access token.")
     refresh_token: Optional[str] = Field(
@@ -148,7 +154,7 @@ class AnthropicOAuthLLM(CustomLLM):
     api_base: str = Field(default=DEFAULT_API_BASE)
     anthropic_version: str = Field(default=DEFAULT_ANTHROPIC_VERSION)
     oauth_beta: str = Field(default=DEFAULT_OAUTH_BETA)
-    user_agent: Optional[str] = Field(default="claude-cli/2.1.85")
+    user_agent: Optional[str] = Field(default=DEFAULT_USER_AGENT)
 
     billing_header_mode: Literal["auto", "always", "never"] = Field(default="auto")
     cc_version: str = Field(default=DEFAULT_CC_VERSION)
@@ -172,7 +178,7 @@ class AnthropicOAuthLLM(CustomLLM):
         *,
         max_tokens: Optional[int] = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
         access_token: Optional[str] = None,
         refresh_token: Optional[str] = None,
         client_id: str = DEFAULT_CLIENT_ID,
@@ -185,7 +191,7 @@ class AnthropicOAuthLLM(CustomLLM):
         api_base: str = DEFAULT_API_BASE,
         anthropic_version: str = DEFAULT_ANTHROPIC_VERSION,
         oauth_beta: str = DEFAULT_OAUTH_BETA,
-        user_agent: Optional[str] = "claude-cli/2.1.85",
+        user_agent: Optional[str] = DEFAULT_USER_AGENT,
         billing_header_mode: Literal["auto", "always", "never"] = "auto",
         cc_version: str = DEFAULT_CC_VERSION,
         cc_entrypoint: str = DEFAULT_CC_ENTRYPOINT,
@@ -239,7 +245,9 @@ class AnthropicOAuthLLM(CustomLLM):
             num_output=self.max_tokens or -1,
             model_name=self.model,
             is_chat_model=True,
-            is_function_calling_model=True,
+            # This text/image adapter does not implement native function calls.
+            # Structured extraction must use the validated text program.
+            is_function_calling_model=False,
         )
 
     def _load_credentials_from_file(self, credential_path: str) -> None:
@@ -458,8 +466,10 @@ class AnthropicOAuthLLM(CustomLLM):
         active_deadline.check()
 
         # Headless environments: skip local server, use hosted callback page
-        use_headless = _is_headless_environment() or os.environ.get(
-            "DROIDRUN_OAUTH_MANUAL", ""
+        use_headless = _is_headless_environment() or (
+            os.environ.get("MOBILERUN_OAUTH_MANUAL")
+            or os.environ.get("DROIDRUN_OAUTH_MANUAL")
+            or ""
         ).lower() in ("1", "true", "yes")
         if use_headless:
             return self.login_headless(

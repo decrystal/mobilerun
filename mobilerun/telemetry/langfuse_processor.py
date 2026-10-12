@@ -1,17 +1,18 @@
 """OpenTelemetry span preprocessing for the Langfuse integration.
 
-Langfuse owns span export, batching, and media upload. This processor runs
-before the Langfuse processor and only normalizes Mobilerun/OpenInference spans
-into the attributes understood by Langfuse.
+Langfuse owns span export, batching, and media upload. Its processor receives
+a normalized export snapshot; other processors retain the original ended span.
 """
 
 import base64
 import json
 import logging
 from contextvars import ContextVar
+from copy import copy
 from typing import TYPE_CHECKING, Any, Optional
 
 from opentelemetry import trace
+from opentelemetry.attributes import BoundedAttributes
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
@@ -62,12 +63,67 @@ def get_last_step_span_context() -> Optional[Context]:
     return _last_step_span_context.get()
 
 
+class _LangfuseSpanProcessor(SpanProcessor):
+    """Wrap the SDK processor without adding an exporter, queue, or uploader."""
+
+    def __init__(self, processor: SpanProcessor, normalizer: "LangfuseSpanProcessor"):
+        self.processor = processor
+        self.normalizer = normalizer
+
+    def on_start(self, span: Span, parent_context: Optional[Context] = None) -> None:
+        self.normalizer.on_start(span, parent_context)
+        self.processor.on_start(span, parent_context)
+
+    def _on_ending(self, span: Span) -> None:
+        on_ending = getattr(self.processor, "_on_ending", None)
+        if on_ending is not None:
+            on_ending(span)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        # Ended spans can already be frozen before _on_ending runs. A shallow
+        # copy retains all span metadata, including bounded events/links and
+        # their dropped counts; only attributes need independent writable storage.
+        snapshot = copy(span)
+        snapshot._attributes = BoundedAttributes(
+            attributes=dict(span.attributes or {}),
+            immutable=False,
+            extended_attributes=getattr(
+                span._attributes, "_extended_attributes", False
+            ),
+        )
+        snapshot._attributes.dropped = span.dropped_attributes
+        self.normalizer.on_end(snapshot)
+        snapshot._attributes._immutable = True
+        self.processor.on_end(snapshot)
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self.processor.force_flush(timeout_millis)
+
+    def shutdown(self) -> None:
+        self.processor.shutdown()
+
+
+class _LangfuseTracerProvider:
+    """Let the public Langfuse client register its processor on our provider."""
+
+    def __init__(self, provider, normalizer: "LangfuseSpanProcessor"):
+        self._provider = provider
+        self._normalizer = normalizer
+
+    def add_span_processor(self, processor: SpanProcessor) -> None:
+        self._provider.add_span_processor(
+            _LangfuseSpanProcessor(processor, self._normalizer)
+        )
+
+    def __getattr__(self, name):
+        return getattr(self._provider, name)
+
+
 class LangfuseSpanProcessor(SpanProcessor):
-    """Normalize spans before Langfuse's public OTel exporter sees them.
+    """Enrich live spans and normalize writable Langfuse export snapshots.
 
     This processor deliberately does not export, batch, upload, or own threads.
-    Register it before constructing the public :class:`langfuse.Langfuse`
-    client so the client's processor receives the normalized span.
+    Use it through _LangfuseTracerProvider so on_end only receives private copies.
     """
 
     def __init__(self, agent: Optional["MobileAgent"] = None) -> None:

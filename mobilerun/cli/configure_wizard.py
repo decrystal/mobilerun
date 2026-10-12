@@ -15,6 +15,7 @@ from mobilerun.agent.providers.minimax import (
 )
 from mobilerun.agent.providers.registry import (
     VARIANT_ENV_KEY_SLOT,
+    model_display_name_for_variant,
     resolve_provider_variant,
 )
 from mobilerun.agent.providers.setup_service import (
@@ -102,6 +103,8 @@ def _print_configure_intro(console: Console) -> None:
 def _print_configure_summary(
     console: Console,
     *,
+    family_id: str,
+    auth_mode: str,
     provider_label: str,
     variant_id: str,
     model: str,
@@ -109,10 +112,11 @@ def _print_configure_summary(
 ) -> None:
     advanced_line = "Yes" if used_advanced_settings else "No"
     provider_detail = "" if provider_label == "XAI" else f" ({variant_id})"
+    model_label = model_display_name_for_variant(family_id, auth_mode, model)
     console.print(
         Panel(
             f"Provider: {provider_label}{provider_detail}\n"
-            f"Model: {model}\n"
+            f"Model: {model_label}\n"
             f"Advanced settings changed: {advanced_line}",
             title="Configuration Saved",
             border_style="green",
@@ -142,6 +146,8 @@ def _prompt_float(console: Console, message: str, default: float) -> float:
 def _prompt_model_choice(
     models: list[str],
     *,
+    family_id: str,
+    auth_mode: str,
     default_model: str,
     allow_back: bool = True,
 ) -> str:
@@ -149,7 +155,15 @@ def _prompt_model_choice(
         choice = _select_with_back(
             "Choose model",
             [
-                *[SelectChoice(value=item, label=item) for item in models],
+                *[
+                    SelectChoice(
+                        value=item,
+                        label=model_display_name_for_variant(
+                            family_id, auth_mode, item
+                        ),
+                    )
+                    for item in models
+                ],
                 SelectChoice(
                     value="enter_model",
                     label="Enter custom model",
@@ -553,6 +567,8 @@ def _configure_provider_model(
             while True:
                 state.selected_model = _prompt_model_choice(
                     models,
+                    family_id=state.family_id,
+                    auth_mode=state.selected_auth_mode,
                     default_model=default_model,
                 )
                 if state.selected_model == _BACK:
@@ -716,6 +732,8 @@ def run_configure_wizard(
             ConfigLoader.save(config)
             _print_configure_summary(
                 console,
+                family_id=state.family_id or "",
+                auth_mode=state.selected_auth_mode or "",
                 provider_label=family_labels[state.family_id],
                 variant_id=state.last_variant_id or state.family_id,
                 model=state.selected_model or "",
@@ -771,6 +789,8 @@ def run_configure_wizard(
             if provider_configured and state.family_id:
                 _print_configure_summary(
                     console,
+                    family_id=state.family_id,
+                    auth_mode=state.selected_auth_mode or "",
                     provider_label=family_labels[state.family_id],
                     variant_id=state.last_variant_id or state.family_id,
                     model=state.selected_model or "",

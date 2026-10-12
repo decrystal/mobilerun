@@ -261,9 +261,16 @@ def test_mobile_agent_lifecycle_forwards_disabled_telemetry_config(
     class FakeContext:
         def __init__(self):
             self.events = []
+            self.store = self
 
         def write_event_to_stream(self, event) -> None:
             self.events.append(event)
+
+        async def set(self, key, value) -> None:
+            setattr(self, key, value)
+
+        async def get(self, key, default=None):
+            return getattr(self, key, default)
 
     captures = []
     flushes = []

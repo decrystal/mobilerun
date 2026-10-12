@@ -35,6 +35,7 @@ from rich.text import Text
 
 from mobilerun import MobileAgent, ResultEvent
 from mobilerun.agent.external import list_agents
+from mobilerun.agent.utils.errors import describe_error
 from mobilerun.agent.utils.llm_picker import load_llm
 from mobilerun.agent.utils.oauth.openai_oauth_llm import (
     DEFAULT_OPENAI_OAUTH_CALLBACK_HOST,
@@ -42,6 +43,7 @@ from mobilerun.agent.utils.oauth.openai_oauth_llm import (
     DEFAULT_OPENAI_OAUTH_CALLBACK_PORT,
     DEFAULT_OPENAI_OAUTH_CREDENTIAL_PATH,
 )
+from mobilerun.agent.utils.portal_setup import portal_version_kwargs
 from mobilerun.cli.configure_wizard import (
     ConfigureWizardCallbacks,
     run_configure_wizard,
@@ -318,7 +320,7 @@ async def run_command(
             return False
 
         except Exception as e:
-            err_desc = str(e) or type(e).__name__
+            err_desc = describe_error(e) or type(e).__name__
             logger.error(f"💥 Error: {err_desc}")
             if config.logging.debug:
                 import traceback
@@ -327,7 +329,7 @@ async def run_command(
             return False
 
     except Exception as e:
-        err_desc = str(e) or type(e).__name__
+        err_desc = describe_error(e) or type(e).__name__
         logger.error(f"💥 Setup error: {err_desc}")
         if debug_mode:
             import traceback
@@ -834,6 +836,7 @@ async def _setup_portal(
     debug: bool,
     latest: bool = False,
     specific_version: str | None = None,
+    in_place: bool = False,
 ):
     """Internal async function to install and enable the Mobilerun Portal on a device."""
     try:
@@ -867,7 +870,11 @@ async def _setup_portal(
             apk_context = download_portal_apk(debug)
         else:
             # Default: delegate to shared setup_portal()
-            success = await setup_portal(device_obj, debug)
+            success = await setup_portal(
+                device_obj,
+                debug,
+                **portal_version_kwargs(setup_portal, in_place=in_place),
+            )
             if success:
                 console.print(
                     "\n[bold green]Setup complete![/] The Mobilerun Portal is now installed and ready to use."
@@ -1418,7 +1425,7 @@ async def test(
             logger.info("⏹️ Stopped by user")
 
         except Exception as e:
-            logger.error(f"💥 Error: {e}")
+            logger.error(f"💥 Error: {describe_error(e)}")
             if config.logging.debug:
                 import traceback
 
@@ -1437,7 +1444,7 @@ if __name__ == "__main__":
     command = "use open_app to open the settings and search for the battery and enter the first result"
     device = None
     provider = "OpenAIResponses"
-    model = "gpt-5.4-pro"
+    model = "gpt-6-astra"
     temperature = 1
     api_key = os.getenv("OPENAI_API_KEY")
     steps = 15

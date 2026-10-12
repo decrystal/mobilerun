@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from mobilerun.agent.action_result import ActionResult
 from mobilerun.agent.oneflows.app_starter_workflow import AppStarter
+from mobilerun.tools.helpers.coordinate import NORMALIZED_MAX, to_normalized
 
 logger = logging.getLogger("mobilerun")
 
@@ -30,6 +31,12 @@ def _uses_screenshot_only_coordinates(ctx: "ActionContext") -> bool:
 
 
 def _screenshot_only_coordinate_error(ctx: "ActionContext") -> str:
+    if getattr(ctx.ui, "use_normalized", False):
+        return (
+            "Coordinates must be normalized values from 0 to 1000 on both axes "
+            "in screenshot-only mode. Observe the screenshot and retry with "
+            "normalized coordinates."
+        )
     width = getattr(ctx.ui, "screen_width", None)
     height = getattr(ctx.ui, "screen_height", None)
     if width and height:
@@ -58,6 +65,11 @@ def _validate_screenshot_only_point(
         raise ValueError(_screenshot_only_coordinate_error(ctx)) from exc
     except ValueError as exc:
         raise ValueError(_screenshot_only_coordinate_error(ctx)) from exc
+
+    if getattr(ctx.ui, "use_normalized", False):
+        if not (0 <= px <= NORMALIZED_MAX and 0 <= py <= NORMALIZED_MAX):
+            raise ValueError(_screenshot_only_coordinate_error(ctx))
+        return
 
     out_of_range = (
         width <= 0 or height <= 0 or px < 0 or px >= width or py < 0 or py >= height
@@ -139,14 +151,51 @@ def _require_active_coordinate_contract(ctx: "ActionContext") -> None:
     )
 
 
+def _validate_normalized_point(
+    x: int | float, y: int | float, *, ctx: "ActionContext"
+) -> None:
+    # Screenshot-only mode reports its own error.
+    if _uses_screenshot_only_coordinates(ctx):
+        return
+    if not getattr(ctx.ui, "use_normalized", False):
+        return
+    try:
+        inside = 0 <= float(x) <= NORMALIZED_MAX and 0 <= float(y) <= NORMALIZED_MAX
+    except (TypeError, ValueError):
+        inside = False
+    if not inside:
+        raise ValueError(
+            f"Coordinates ({x}, {y}) are outside the normalized 0-1000 range "
+            "of the device state. Use the element bounds shown to you and retry."
+        )
+
+
 def _convert_action_point(
     x: int | float, y: int | float, *, ctx: "ActionContext"
 ) -> tuple[int, int]:
     _validate_screenshot_only_point(x, y, ctx=ctx)
+    _validate_normalized_point(x, y, ctx=ctx)
     _require_active_coordinate_contract(ctx)
     _validate_model_space_point(x, y, ctx=ctx)
     abs_x, abs_y = ctx.ui.convert_point(x, y)
     return int(round(abs_x)), int(round(abs_y))
+
+
+def _summary_point(
+    x: int | float, y: int | float, abs_x: int, abs_y: int, *, ctx: "ActionContext"
+) -> str:
+    # Normalized callers get their own 0-1000 values back.
+    if getattr(ctx.ui, "use_normalized", False):
+        return f"({x}, {y})"
+    return f"({abs_x}, {abs_y})"
+
+
+def _element_summary_point(x: int, y: int, *, ctx: "ActionContext") -> str:
+    # Element taps are device units; normalized callers see 0-1000.
+    ui = ctx.ui
+    if getattr(ui, "use_normalized", False) and ui.screen_width and ui.screen_height:
+        x, y = to_normalized(x, y, ui.screen_width, ui.screen_height)
+    return f"({x}, {y})"
 
 
 def _macro_recorder(ctx: "ActionContext"):
@@ -226,7 +275,7 @@ async def click(index: int, *, ctx: "ActionContext") -> ActionResult:
         ]
         if info.get("child_texts"):
             detail_parts.append(f"Contains text: {' | '.join(info['child_texts'])}")
-        detail_parts.append(f"Coordinates: ({x}, {y})")
+        detail_parts.append(f"Coordinates: {_element_summary_point(x, y, ctx=ctx)}")
 
         return ActionResult(
             success=True, summary=f"Clicked on {' | '.join(detail_parts)}"
@@ -256,7 +305,11 @@ async def long_press(index: int, *, ctx: "ActionContext") -> ActionResult:
             pre_ui=pre_ui,
         )
         return ActionResult(
-            success=True, summary=f"Long pressed element at index {index} at ({x}, {y})"
+            success=True,
+            summary=(
+                f"Long pressed element at index {index} at "
+                f"{_element_summary_point(x, y, ctx=ctx)}"
+            ),
         )
     except ValueError as e:
         return ActionResult(
@@ -282,7 +335,10 @@ async def long_press_at(x: int, y: int, *, ctx: "ActionContext") -> ActionResult
             },
             pre_ui=pre_ui,
         )
-        return ActionResult(success=True, summary=f"Long pressed at ({abs_x}, {abs_y})")
+        return ActionResult(
+            success=True,
+            summary=f"Long pressed at {_summary_point(x, y, abs_x, abs_y, ctx=ctx)}",
+        )
     except Exception as e:
         return ActionResult(
             success=False, summary=f"Failed to long press at ({x}, {y}): {e}"
@@ -300,7 +356,10 @@ async def click_at(x: int, y: int, *, ctx: "ActionContext") -> ActionResult:
             {"action_type": "tap", "x": abs_x, "y": abs_y},
             pre_ui=pre_ui,
         )
-        return ActionResult(success=True, summary=f"Tapped at ({abs_x}, {abs_y})")
+        return ActionResult(
+            success=True,
+            summary=f"Tapped at {_summary_point(x, y, abs_x, abs_y, ctx=ctx)}",
+        )
     except Exception as e:
         return ActionResult(success=False, summary=f"Failed to tap at ({x}, {y}): {e}")
 
@@ -313,6 +372,8 @@ async def click_area(
         pre_ui = await _macro_pre_ui(ctx)
         _validate_screenshot_only_point(x1, y1, ctx=ctx)
         _validate_screenshot_only_point(x2, y2, ctx=ctx)
+        _validate_normalized_point(x1, y1, ctx=ctx)
+        _validate_normalized_point(x2, y2, ctx=ctx)
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
         abs_x, abs_y = _convert_action_point(cx, cy, ctx=ctx)
         await ctx.driver.tap(abs_x, abs_y)
@@ -322,7 +383,11 @@ async def click_area(
             pre_ui=pre_ui,
         )
         return ActionResult(
-            success=True, summary=f"Tapped center of area at ({abs_x}, {abs_y})"
+            success=True,
+            summary=(
+                "Tapped center of area at "
+                f"{_summary_point(cx, cy, abs_x, abs_y, ctx=ctx)}"
+            ),
         )
     except Exception as e:
         return ActionResult(success=False, summary=f"Failed to tap area center: {e}")
@@ -442,7 +507,11 @@ async def swipe(
         )
         return ActionResult(
             success=True,
-            summary=f"Swiped from ({start_x}, {start_y}) to ({end_x}, {end_y})",
+            summary=(
+                "Swiped from "
+                f"{_summary_point(*coordinate, start_x, start_y, ctx=ctx)} to "
+                f"{_summary_point(*coordinate2, end_x, end_y, ctx=ctx)}"
+            ),
         )
     except Exception as e:
         return ActionResult(success=False, summary=f"Failed to swipe: {e}")
@@ -482,7 +551,8 @@ async def open_bundle_id(
     ctx: "ActionContext",
 ) -> ActionResult:
     """Open an app by exact package name, app id, or iOS bundle identifier."""
-    identifier = app_id or bundle_id
+    # Models sometimes end parameter values with a newline.
+    identifier = str(app_id or bundle_id or "").strip()
     if not identifier:
         return ActionResult(
             success=False,
