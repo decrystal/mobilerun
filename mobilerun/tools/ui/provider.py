@@ -39,6 +39,15 @@ _MAX_RETRIES = 7
 _RECOVERY_AFTER_ATTEMPT = 5
 
 
+class StaleObservationError(RuntimeError):
+    """The device returned a known cached rather than current observation."""
+
+
+def require_fresh_observation(data: Any) -> None:
+    if isinstance(data, dict) and data.get("degraded"):
+        raise StaleObservationError("Portal returned a cached accessibility snapshot")
+
+
 async def fetch_state_with_retry(
     fetch: Callable[[], Awaitable[Dict[str, Any]]],
     recovery: Optional[Callable[[], Awaitable[None]]] = None,
@@ -77,6 +86,7 @@ async def fetch_state_with_retry(
 
             t0 = time.monotonic() if is_debug else 0
             combined_data = await fetch()
+            require_fresh_observation(combined_data)
 
             if is_debug:
                 elapsed = (time.monotonic() - t0) * 1000

@@ -91,6 +91,7 @@ class MobileAgentState(BaseModel):
     # ========================================================================
     finished: bool = False
     success: Optional[bool] = None
+    final_answer: str | None = None
 
     # ========================================================================
     # Message History (for stateful agents - preserves ChatMessage blocks)
@@ -130,7 +131,11 @@ class MobileAgentState(BaseModel):
             self.agent_memory = text
 
     async def complete(
-        self, success: bool, reason: str = "", message: str = ""
+        self,
+        success: bool,
+        reason: str = "",
+        message: str = "",
+        final_answer: str | None = None,
     ) -> None:
         """Mark task as finished.
 
@@ -140,9 +145,14 @@ class MobileAgentState(BaseModel):
         answer = reason or message
         if not success and not answer:
             raise ValueError("Reason for failure is required if success is False.")
+        if final_answer is not None and (
+            not isinstance(final_answer, str) or not final_answer.strip()
+        ):
+            raise ValueError("final_answer must be a nonempty string when supplied.")
         self.finished = True
         self.success = success
         self.answer = answer or "Task completed successfully."
+        self.final_answer = final_answer if success else None
 
     def queue_user_message(self, message: str) -> QueuedUserMessage:
         if not message or not message.strip():

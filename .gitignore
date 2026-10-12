@@ -35,6 +35,11 @@ credentials.yaml
 !.gitignore
 !.github/
 
+# Local execution, benchmark, and model-probe evidence; never commit.
+.artifacts/
+.pytest_cache/
+.ruff_cache/
+
 backend/
 frontend/
 

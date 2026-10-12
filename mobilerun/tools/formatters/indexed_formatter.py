@@ -158,17 +158,25 @@ class IndexedFormatter(TreeFormatter):
         return "\n".join(formatted_lines)
 
     def _flatten_with_index(
-        self, node: Dict[str, Any], counter: List[int]
+        self,
+        node: Dict[str, Any],
+        counter: List[int],
+        parent_index: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Recursively flatten tree with index assignment."""
         results = []
 
         formatted = self._format_node(node, counter[0])
+        formatted["parentIndex"] = parent_index
         results.append(formatted)
         counter[0] += 1
 
         for child in node.get("children", []):
-            results.extend(self._flatten_with_index(child, counter))
+            results.extend(
+                self._flatten_with_index(
+                    child, counter, parent_index=formatted["index"]
+                )
+            )
 
         return results
 
@@ -222,6 +230,85 @@ class IndexedFormatter(TreeFormatter):
             "bounds": bounds_str,
             "children": [],
         }
+        editable = (
+            node.get("isEditable") is True
+            or node.get("editable") is True
+            or short_class
+            in {
+                "EditText",
+                "AutoCompleteTextView",
+                "MultiAutoCompleteTextView",
+                "TextField",
+            }
+        )
+        if (
+            editable
+            and "text" in node
+            and (node["text"] is None or isinstance(node["text"], str))
+        ):
+            # The display label may fall back to contentDescription/resourceId;
+            # input verification must retain the actual value, including "".
+            formatted["inputValue"] = (
+                ""
+                if node.get("isShowingHintText") is True or node["text"] is None
+                else node["text"]
+            )
+        if editable:
+            # Native field constraints must reach decision policies; a visible
+            # label alone does not describe numeric, phone or multiline input.
+            for field in (
+                "hint",
+                "inputType",
+                "maxTextLength",
+                "isMultiLine",
+                "windowId",
+                "isShowingHintText",
+            ):
+                if field in node:
+                    formatted[field] = node[field]
+        # Decision policies need the observed affordances and state, while the
+        # existing model-facing text deliberately keeps its compact schema.
+        # Preserve explicit False values and leave missing observations absent.
+        decision_fields = {
+            "clickable": ("isClickable", "clickable"),
+            "longClickable": ("isLongClickable", "longClickable"),
+            "editable": ("isEditable", "editable"),
+            "enabled": ("isEnabled", "enabled"),
+            "scrollable": ("isScrollable", "scrollable"),
+            "focused": ("isFocused", "focused"),
+            "password": ("isPassword", "password"),
+            "checkable": ("isCheckable", "checkable"),
+            "checked": ("isChecked", "checked"),
+            "selected": ("isSelected", "selected"),
+            "visible": ("isVisibleToUser", "isVisible", "visible"),
+        }
+        for field, source_names in decision_fields.items():
+            for source_name in source_names:
+                if source_name in node:
+                    formatted[source_name] = node[source_name]
+            if field not in formatted:
+                for source_name in source_names:
+                    if source_name in node:
+                        formatted[field] = node[source_name]
+                        break
+        # Preserve semantics and collection coverage separately from display labels.
+        for field in (
+            "contentDescription",
+            "stateDescription",
+            "rawText",
+            "rangeInfo",
+            "collectionInfo",
+            "collectionItemInfo",
+            "actionList",
+            "childCount",
+        ):
+            source = "text" if field == "rawText" else field
+            if source in node:
+                formatted[field] = node[source]
+        for field in ("textSelectionStart", "textSelectionEnd"):
+            value = node.get(field)
+            if type(value) is int and value >= 0:
+                formatted[field] = value
         if display_bounds_str is not None:
             formatted["displayBounds"] = display_bounds_str
         return formatted

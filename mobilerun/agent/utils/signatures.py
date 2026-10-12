@@ -277,8 +277,7 @@ async def build_tool_registry(
             fn=open_app,
             params={"text": {"type": "string", "required": True}},
             description=(
-                "Open an app by name or description. "
-                'Usage: {"action": "open_app", "text": "Gmail"}'
+                'Open an app by name or description. Usage: {"action": "open_app", "text": "Gmail"}'
             ),
             deps={"start_app", "get_apps"},
         )
@@ -289,11 +288,13 @@ async def build_tool_registry(
         params={
             "success": {"type": "boolean", "required": True},
             "message": {"type": "string", "required": True},
+            "final_answer": {"type": "string", "required": False},
         },
         description=(
             "Mark task as complete. "
             "success=true if task succeeded, false if failed. "
-            "message contains the result, answer, or explanation."
+            "message explains the outcome. For information requests, final_answer contains "
+            "the actual observed answer in the user's requested format, without completion commentary."
         ),
     )
 

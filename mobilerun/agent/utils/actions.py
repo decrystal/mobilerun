@@ -531,14 +531,21 @@ async def wait(duration: float = 1.0, *, ctx: "ActionContext") -> ActionResult:
 
 
 async def complete(
-    success: bool, reason: str = "", message: str = "", *, ctx: "ActionContext"
+    success: bool,
+    reason: str = "",
+    message: str = "",
+    final_answer: str | None = None,
+    *,
+    ctx: "ActionContext",
 ) -> ActionResult:
     """Mark the task as complete.
 
     Accepts both ``reason`` and ``message`` — FastAgent XML prompt uses
     ``message``, action signature uses ``reason``.
     """
-    await ctx.shared_state.complete(success, reason=reason, message=message)
+    await ctx.shared_state.complete(
+        success, reason=reason, message=message, final_answer=final_answer
+    )
     return ActionResult(success=True, summary=ctx.shared_state.answer)
 
 

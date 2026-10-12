@@ -7,6 +7,8 @@ blocks, the agent parses them, executes the tools via ToolRegistry, and feeds
 
 import asyncio
 import copy
+import hashlib
+import json
 import logging
 import os
 from typing import TYPE_CHECKING, Optional, Type
@@ -99,6 +101,10 @@ class FastAgent(Workflow):
         output_model: Type[BaseModel] | None = None,
         prompt_resolver: Optional[PromptResolver] = None,
         tracing_config: TracingConfig | None = None,
+        completion_verifier=None,
+        decision_policy=None,
+        visual_fallback=None,
+        decision_trace=None,
         *args,
         **kwargs,
     ):
@@ -124,6 +130,23 @@ class FastAgent(Workflow):
         self.output_model = output_model
         self.prompt_resolver = prompt_resolver or PromptResolver()
         self.tracing_config = tracing_config
+        self.decision_runtime = None
+        jev_config = getattr(agent_config, "jev", None)
+        if jev_config and jev_config.enabled:
+            from mobilerun.agent.decision.runtime import DecisionRuntime
+
+            self.decision_runtime = DecisionRuntime(
+                jev_config,
+                action_ctx,
+                registry,
+                state_provider,
+                verifier=completion_verifier,
+                policy=decision_policy,
+                visual_fallback=visual_fallback,
+                trace=decision_trace,
+                app_card_config=getattr(agent_config, "app_cards", None),
+            )
+        self._decision_goal = ""
 
         self.system_prompt: ChatMessage | None = None
         self.tool_call_counter = 0
@@ -220,6 +243,7 @@ class FastAgent(Workflow):
         # Get goal and build user message
         user_input = ev.get("input", default=None)
         assert user_input, "User input cannot be empty."
+        self._decision_goal = user_input
 
         user_message = await self._build_user_prompt(user_input)
         self.shared_state.message_history.clear()
@@ -261,7 +285,11 @@ class FastAgent(Workflow):
 
         # Capture screenshot if needed
         screenshot = None
-        if self.vision or self._stream_screenshots or self.save_trajectory != "none":
+        if (
+            (self.vision and not self.decision_runtime)
+            or self._stream_screenshots
+            or self.save_trajectory != "none"
+        ):
             try:
                 screenshot = await self.action_ctx.driver.screenshot()
 
@@ -285,6 +313,7 @@ class FastAgent(Workflow):
                 logger.warning(f"Failed to capture screenshot: {e}")
 
         # Get device state
+        ui_state = None
         try:
             ui_state = await self.state_provider.get_state()
             self.action_ctx.ui = ui_state
@@ -316,6 +345,52 @@ class FastAgent(Workflow):
             )
             if self.debug:
                 logger.error("State retrieval error details:", exc_info=True)
+            if self.decision_runtime:
+                return FastAgentEndEvent(
+                    success=False,
+                    reason="Cannot obtain a fresh device state; no action executed.",
+                    tool_call_count=self.tool_call_counter,
+                )
+
+        # A successful Jev decision bypasses all LLM/VLM inference on this step.
+        fallback_visual_fingerprint = None
+        if self.decision_runtime:
+            selection = await self.decision_runtime.select(
+                self._decision_goal, ui_state
+            )
+            if selection is not None:
+                if selection.stop:
+                    return FastAgentEndEvent(
+                        success=False,
+                        reason=selection.reason,
+                        tool_call_count=self.tool_call_counter,
+                    )
+                code = format_tool_calls(selection.calls)
+                thought = f"{selection.source}: selected one validated tool."
+                self.shared_state.message_history.append(
+                    ChatMessage(role="assistant", content=thought + "\n" + code)
+                )
+                self.shared_state.last_thought = thought
+                await ctx.store.set("pending_tool_calls", selection.calls)
+                event = FastAgentResponseEvent(
+                    thought=thought,
+                    code=code,
+                    tool_call_status=ToolCallParseStatus.VALID,
+                )
+                ctx.write_event_to_stream(event)
+                return event
+            # Refresh after a potentially slow Jev request before preparing the
+            # ordinary LLM fallback. Do not pair a fresh image with an old tree.
+            ui_state = await self.state_provider.get_state()
+            self.action_ctx.ui = ui_state
+            self.shared_state.formatted_device_state = ui_state.formatted_text
+            self.shared_state.a11y_tree = ui_state.elements
+            self.shared_state.phone_state = ui_state.phone_state
+            self.shared_state.focused_text = ui_state.focused_text
+            if self.vision:
+                screenshot = await self.action_ctx.driver.screenshot()
+                if not ui_state.elements:
+                    fallback_visual_fingerprint = hashlib.sha256(screenshot).hexdigest()
 
         # Limit history and build ephemeral copy for LLM
         limited_history = limit_history(
@@ -324,6 +399,30 @@ class FastAgent(Workflow):
             preserve_first=True,
         )
         messages_to_send = [self.system_prompt] + copy.deepcopy(limited_history)
+        if self.decision_runtime:
+            messages_to_send.insert(
+                1,
+                ChatMessage(
+                    role="system",
+                    content=self.decision_runtime.instructions
+                    + "\nApp-specific hints:\n"
+                    + self.decision_runtime.app_card,
+                ),
+            )
+            messages_to_send.append(
+                ChatMessage(
+                    role="user",
+                    content=(
+                        self.decision_runtime.feedback + "\nExecute exactly one tool. "
+                        "Installed apps (use launch_app with the exact package): "
+                        + str(self.decision_runtime.apps or [])
+                        + "\nTask progress and executed actions: "
+                        + json.dumps(
+                            self.decision_runtime.task_context(), ensure_ascii=False
+                        )
+                    ),
+                )
+            )
 
         # Inject device state and screenshot into the copy (not the original)
         user_indices = [
@@ -397,6 +496,18 @@ class FastAgent(Workflow):
         parse_result = parse_tool_calls_detailed(response_text, self.param_types)
         thought = parse_result.thought
         tool_calls = parse_result.calls
+        if self.decision_runtime:
+            self.decision_runtime.record("decision", source="llm", status="response")
+            selection = self.decision_runtime.accept_fallback(
+                tool_calls, ui_state, visual_fingerprint=fallback_visual_fingerprint
+            )
+            if selection.stop:
+                return FastAgentEndEvent(
+                    success=False,
+                    reason=selection.reason,
+                    tool_call_count=self.tool_call_counter,
+                )
+            self.decision_runtime.pending = selection
 
         # Extract <add_memory> from thought text and append to unified memory
         memory_update = extract_add_memory(thought)
@@ -517,6 +628,33 @@ class FastAgent(Workflow):
     ) -> FastAgentOutputEvent | FastAgentEndEvent:
         """Execute parsed tool calls and return results."""
         tool_calls = await ctx.store.get("pending_tool_calls", [])
+        # Consume once before dispatch, including when a later read fails.
+        await ctx.store.set("pending_tool_calls", [])
+
+        if self.decision_runtime and tool_calls:
+            current, invalid = await self.decision_runtime.validate_before_execute()
+            self.action_ctx.ui = current
+            if invalid:
+                if self.decision_runtime.recover_completion_validation(invalid):
+                    event = FastAgentOutputEvent(
+                        output="Reviewed evidence changed; no tool was executed. Observe and review again."
+                    )
+                    ctx.write_event_to_stream(event)
+                    return event
+                if (
+                    invalid == "completion_unverified"
+                    or self.decision_runtime.stale_count >= 3
+                ):
+                    return FastAgentEndEvent(
+                        success=False,
+                        reason=invalid,
+                        tool_call_count=self.tool_call_counter,
+                    )
+                event = FastAgentOutputEvent(
+                    output="State changed before execution; no tool was executed. Observe and decide again."
+                )
+                ctx.write_event_to_stream(event)
+                return event
 
         if not tool_calls:
             event = FastAgentOutputEvent(output="No tool calls to execute.")
@@ -540,6 +678,37 @@ class FastAgent(Workflow):
                 action_result = await self.registry.execute(
                     call.name, call.parameters, self.action_ctx, workflow_ctx=ctx
                 )
+            if self.decision_runtime:
+                self.decision_runtime.record_execution(
+                    call, action_result, self.action_ctx.ui
+                )
+                if not action_result.success:
+                    if self.decision_runtime.recover_local_failure(call, action_result):
+                        event = FastAgentOutputEvent(output=action_result.summary)
+                        ctx.write_event_to_stream(event)
+                        return event
+                    # The driver may have applied input before the response failed.
+                    # Never let an LLM silently replay this uncertain mutation.
+                    return FastAgentEndEvent(
+                        success=False,
+                        reason="Tool outcome is uncertain or failed; stopped without replay: "
+                        + action_result.summary,
+                        tool_call_count=self.tool_call_counter,
+                    )
+                if not await self.decision_runtime.verify_input(call):
+                    if self.decision_runtime.input_retry is not None:
+                        event = FastAgentOutputEvent(
+                            output="The bound input field contains a different value. "
+                            "Input method restored; re-observe that field before one bounded replacement."
+                        )
+                        ctx.write_event_to_stream(event)
+                        return event
+                    return FastAgentEndEvent(
+                        success=False,
+                        reason="Text input or input-method restoration could not be verified; "
+                        "stopped without retyping.",
+                        tool_call_count=self.tool_call_counter,
+                    )
             results.append(
                 ToolResult(
                     name=call.name,
@@ -558,6 +727,7 @@ class FastAgent(Workflow):
                     self.shared_state.finished = False
                     self.shared_state.success = None
                     self.shared_state.answer = ""
+                    self.shared_state.final_answer = None
                     results_xml = format_tool_results(results)
                     event = FastAgentOutputEvent(output=results_xml)
                     ctx.write_event_to_stream(event)
@@ -604,6 +774,10 @@ class FastAgent(Workflow):
 
         drained = self.shared_state.drain_user_messages()
         if drained:
+            if self.decision_runtime:
+                self._decision_goal += "\nUser update:\n" + "\n".join(
+                    m.message for m in drained
+                )
             external_block = "\n".join(
                 f"<external_user_message>\n{m.message}\n</external_user_message>"
                 for m in drained
@@ -631,6 +805,8 @@ class FastAgent(Workflow):
     @step
     async def finalize(self, ev: FastAgentEndEvent, ctx: Context) -> StopEvent:
         self.shared_state.finished = False
+        if self.decision_runtime:
+            await self.decision_runtime.aclose()
         ctx.write_event_to_stream(ev)
 
         return StopEvent(

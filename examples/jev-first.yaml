@@ -1,0 +1,39 @@
+_version: 7
+agent:
+  reasoning: false
+  max_steps: 60
+  streaming: false
+  after_sleep_action: 0.15
+  fast_agent:
+    vision: true
+    parallel_tools: false
+  app_cards:
+    enabled: true
+  jev:
+    enabled: true
+    model: jev-1.13.0
+    confidence_threshold: 0.5
+    fallback: autoglm
+    fallback_model: autoglm-phone
+    reasoning_model: glm-4.6v
+    text_values: []
+    # Empty: agent judges the whole goal. Add assertions for development if needed.
+    completion: {}
+device:
+  serial: emulator-5554
+  portal_mode: required
+  auto_setup: false
+telemetry:
+  enabled: false
+tracing:
+  enabled: false
+llm_profiles:
+  fast_agent: &fallback
+    provider: OpenAILike
+    provider_family: zai
+    api_key_source: env
+    model: autoglm-phone
+    api_base: https://open.bigmodel.cn/api/paas/v4
+    kwargs:
+      is_chat_model: true
+  app_opener: *fallback

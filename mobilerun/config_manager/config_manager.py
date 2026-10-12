@@ -85,6 +85,91 @@ class LLMProfile:
 
 
 @dataclass
+class JevConfig:
+    """Optional decision-first path inside the existing FastAgent."""
+
+    enabled: bool = False
+    model: str = "jev-1.13.0"
+    timeout: float = 15.0
+    confidence_threshold: float = 0.5
+    fallback: Literal["llm", "autoglm"] = "llm"
+    fallback_model: str = "glm-5.3-flash"
+    reasoning_model: str = "glm-5.3-flash"
+    fallback_base_url: str = "http://66.154.100.178:8080/v1"
+    fallback_api_key_env: str = "GLM_API_KEY"
+    fallback_thinking: Literal["enabled", "disabled"] | None = "disabled"
+    fallback_timeout: float = 45.0
+    query_memory: bool = True
+    input_repair: bool = True
+    semantic_recovery: bool = True
+    review_history_images: bool = True
+    derive_review_dependencies: bool = True
+    share_native_values: bool = True
+    native_text_references: bool = True
+    native_text_edits: bool = True
+    native_text_patches: bool = True
+    native_proof_bindings: bool = True
+    native_query_bindings: bool = True
+    effect_scopes: bool = True
+    query_scopes: bool = True
+    visual_frame_observations: bool = True
+    text_values: list[str] = field(default_factory=list)
+    completion: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        for name in (
+            "query_memory",
+            "input_repair",
+            "semantic_recovery",
+            "review_history_images",
+            "derive_review_dependencies",
+            "share_native_values",
+            "native_text_references",
+            "native_text_edits",
+            "native_text_patches",
+            "native_proof_bindings",
+            "native_query_bindings",
+            "effect_scopes",
+            "query_scopes",
+            "visual_frame_observations",
+        ):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError("Jev " + name + " must be a boolean")
+        if self.fallback not in {"llm", "autoglm"}:
+            raise ValueError("Jev fallback must be llm or autoglm")
+        if self.fallback_thinking not in {None, "enabled", "disabled"}:
+            raise ValueError("Jev fallback_thinking must be enabled, disabled or None")
+        if (
+            not isinstance(self.reasoning_model, str)
+            or not self.reasoning_model.strip()
+        ):
+            raise ValueError("Jev reasoning_model must be a nonempty model name")
+        if not isinstance(self.fallback_model, str) or not self.fallback_model.strip():
+            raise ValueError("Jev fallback_model must be a nonempty model name")
+        if (
+            not isinstance(self.fallback_base_url, str)
+            or not self.fallback_base_url.strip()
+        ):
+            raise ValueError("Jev fallback_base_url must be a nonempty URL")
+        if (
+            not isinstance(self.fallback_api_key_env, str)
+            or not self.fallback_api_key_env.isidentifier()
+            or not self.fallback_api_key_env.isascii()
+        ):
+            raise ValueError(
+                "Jev fallback_api_key_env must be an environment variable name"
+            )
+        if not 0 <= self.confidence_threshold <= 1:
+            raise ValueError("Jev confidence_threshold must be between 0 and 1")
+        if not 0 < self.timeout <= 120 or not 0 < self.fallback_timeout <= 120:
+            raise ValueError("Decision timeouts must be between 0 and 120 seconds")
+        if not isinstance(self.text_values, list) or not all(
+            isinstance(text, str) and text for text in self.text_values
+        ):
+            raise ValueError("Jev text_values must be a list of nonempty strings")
+
+
+@dataclass
 class FastAgentConfig:
     vision: bool = False
     parallel_tools: bool = True
@@ -138,6 +223,7 @@ class AgentConfig:
     manager: ManagerConfig = field(default_factory=ManagerConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
     app_cards: AppCardConfig = field(default_factory=AppCardConfig)
+    jev: JevConfig = field(default_factory=JevConfig)
 
     def get_fast_agent_system_prompt_path(self) -> str:
         return str(PathResolver.resolve(self.fast_agent.system_prompt, must_exist=True))
@@ -367,6 +453,7 @@ class MobileConfig:
             manager=manager_config,
             executor=executor_config,
             app_cards=app_cards_config,
+            jev=JevConfig(**agent_data.get("jev", {})),
         )
 
         # External agents config - just pass through as-is

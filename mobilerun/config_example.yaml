@@ -23,6 +23,29 @@ agent:
   # true = normalized [0-1000] range (resolution-independent)
   use_normalized_coordinates: false
 
+  # Optional Jev-first path within FastAgent (reasoning must remain false).
+  # Credentials: TYPESAFE_API_KEY for Jev; GLM_API_KEY for the selected relay.
+  jev:
+    enabled: false
+    model: jev-1.13.0
+    timeout: 15.0
+    confidence_threshold: 0.5
+    # llm = the existing FastAgent LLM; autoglm = phone-action protocol adapter.
+    fallback: llm
+    fallback_model: glm-5.3-flash
+    reasoning_model: glm-5.3-flash
+    # OpenAI-compatible base URL and a dedicated credential variable (no Key here).
+    fallback_base_url: http://66.154.100.178:8080/v1
+    fallback_api_key_env: GLM_API_KEY
+    # Provider inference option, independent from the agent's completion rules.
+    # Use null to leave the provider's default unchanged.
+    fallback_thinking: disabled
+    fallback_timeout: 45.0
+    # Optional exact Jev input candidates; fallback derives missing text from the goal.
+    text_values: []
+    # Empty: agent-assessed completion. Optional assertions or Python completion_verifier.
+    completion: {}
+
   # Fast Agent Configuration
   fast_agent:
     # Enable vision capabilities (screenshots)

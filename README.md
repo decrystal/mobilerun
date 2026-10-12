@@ -136,6 +136,8 @@ Read the full [framework documentation](https://docs.mobilerun.ai/framework/quic
 
 ## ⚙️ Features
 
+An opt-in [Jev-first FastAgent](docs/jev-first.md) is available in this checkout: goal-only Android tasks, local device control, typed decisions, general operating guidance, and an LLM/AutoGLM fallback. See the guide for agent-assessed completion, optional assertions and live emulator tests.
+
 - **CLI:** Run one-off natural language tasks, inspect devices, replay macros, and debug from the terminal.
 - **Python API:** Build custom mobile automation workflows with Python and use custom tools.
 - **Android and iOS support:** Control Android through the Portal app or target iOS through the iOS Portal flow.

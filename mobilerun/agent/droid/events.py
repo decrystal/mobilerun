@@ -100,9 +100,11 @@ class ResultEvent(StopEvent):
     - reason: Explanation or answer
     - steps: Number of steps taken
     - structured_output: Extracted structured data (if output_model was provided)
+    - final_answer: Explicit verified answer to an information request, when available
     """
 
     success: bool
     reason: str
     steps: int
     structured_output: Optional[BaseModel] = None
+    final_answer: str | None = None

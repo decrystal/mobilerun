@@ -55,6 +55,7 @@ Homepage = "https://github.com/droidrun/mobilerun"
 Documentation = "https://docs.mobilerun.ai/"
 
 [project.optional-dependencies]
+jev = ["httpx[socks]>=0.27.0"]
 anthropic = [
     "anthropic>=0.67.0",
     "llama-index-llms-anthropic>=0.8.6,<0.9.0",

@@ -7,6 +7,7 @@ Architecture:
 - When reasoning=True: Uses Manager (planning) + Executor (action) workflows
 """
 
+import asyncio
 import logging
 import os
 import traceback
@@ -206,6 +207,9 @@ class MobileAgent(Workflow):
         prompts: dict[str, str] | None = None,
         driver: "DeviceDriver | None" = None,
         state_provider: "StateProvider | None" = None,
+        completion_verifier=None,
+        decision_policy=None,
+        visual_fallback=None,
         timeout: int = 1000,
         *args,
         **kwargs,
@@ -219,6 +223,10 @@ class MobileAgent(Workflow):
             runtype=self.runtype,
         )
         self.output_model = output_model
+        self.completion_verifier = completion_verifier
+        self.decision_policy = decision_policy
+        self.visual_fallback = visual_fallback
+        self.decision_trace = []
 
         # Initialize prompt resolver for custom prompts
         self.prompt_resolver = PromptResolver(custom_prompts=prompts)
@@ -257,6 +265,10 @@ class MobileAgent(Workflow):
             mcp=config.mcp if config else MCPConfig(),
         )
         self.shared_state.telemetry_config_enabled = self.config.telemetry.enabled
+        if self.config.agent.jev.enabled and self.config.agent.reasoning:
+            raise ValueError(
+                "Jev-first currently uses FastAgent; set agent.reasoning=false"
+            )
         control_backend = _normalize_control_backend(
             self.resolved_device_config.control_backend
         )
@@ -643,6 +655,11 @@ class MobileAgent(Workflow):
         )
 
         # User custom tools
+        if self.config.agent.jev.enabled:
+            from mobilerun.agent.decision.runtime import register_decision_tools
+
+            register_decision_tools(registry)
+            standard_tool_names.add("launch_app")
         if self.user_custom_tools:
             registry.register_from_dict(self.user_custom_tools)
 
@@ -794,6 +811,7 @@ class MobileAgent(Workflow):
 
         logger.debug(f"🔧 Executing task: {ev.instruction}")
 
+        agent = None
         try:
             agent = FastAgent(
                 llm=self.fast_agent_llm,
@@ -808,6 +826,10 @@ class MobileAgent(Workflow):
                 prompt_resolver=self.prompt_resolver,
                 timeout=self.timeout,
                 tracing_config=self.config.tracing,
+                completion_verifier=self.completion_verifier,
+                decision_policy=self.decision_policy,
+                visual_fallback=self.visual_fallback,
+                decision_trace=self.decision_trace,
             )
 
             handler = agent.run(
@@ -847,6 +869,12 @@ class MobileAgent(Workflow):
             return FastAgentResultEvent(
                 success=False, reason=f"Error: {str(e)}", instruction=ev.instruction
             )
+        finally:
+            if agent is not None and agent.decision_runtime is not None:
+                try:
+                    await agent.decision_runtime.aclose()
+                except Exception:
+                    logger.warning("Decision client cleanup failed")
 
     @step
     async def handle_fast_agent_result(
@@ -1023,6 +1051,7 @@ class MobileAgent(Workflow):
             reason=ev.reason,
             steps=self.shared_state.step_number,
             structured_output=None,
+            final_answer=self.shared_state.final_answer if ev.success else None,
         )
 
         # Extract structured output if model was provided
@@ -1069,7 +1098,9 @@ class MobileAgent(Workflow):
             or self.config.logging.save_trajectory != "none"
         ):
             try:
-                screenshot = await self.action_ctx.driver.screenshot()
+                screenshot = await asyncio.wait_for(
+                    self.action_ctx.driver.screenshot(), timeout=10
+                )
                 if screenshot:
                     ctx.write_event_to_stream(ScreenshotEvent(screenshot=screenshot))
                     parent_span = trace.get_current_span()
@@ -1084,7 +1115,9 @@ class MobileAgent(Workflow):
                 logger.warning(f"Failed to capture final screenshot: {e}")
 
             try:
-                ui_state = await self.state_provider.get_state()
+                ui_state = await asyncio.wait_for(
+                    self.state_provider.get_state(), timeout=15
+                )
                 ctx.write_event_to_stream(
                     RecordUIStateEvent(ui_state=ui_state.elements)
                 )
