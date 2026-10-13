@@ -10,13 +10,13 @@ from test_decision_visual_guards import _Policy, _runtime, _ui
 from test_task_evidence import task
 
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import (
-    AutoGLMDecision,
-    AutoGLMFallback,
-    AutoGLMToolCall,
-)
 from mobilerun.agent.decision.jev import JevDecision
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import (
+    VisualDecision,
+    VisualFallback,
+    VisualToolCall,
+)
 from mobilerun.agent.fast_agent.xml_parser import ToolCall
 
 
@@ -85,7 +85,7 @@ def test_actual_request_cannot_repeat_completion_instead_of_correcting(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 base_url="https://example.invalid/v1",
@@ -211,21 +211,21 @@ def test_runtime_rejects_completion_even_if_adapter_ignores_corrective_mode(retu
         visual = runner.visual_fallback
         visual.supports_corrective_actions = True
         illegal = (
-            AutoGLMDecision("done", message="Done")
+            VisualDecision("done", message="Done")
             if returned == "done"
-            else AutoGLMDecision(
+            else VisualDecision(
                 "action",
                 calls=(
-                    AutoGLMToolCall("complete", {"success": True, "message": "Done"}),
+                    VisualToolCall("complete", {"success": True, "message": "Done"}),
                 ),
             )
         )
         visual.decide = AsyncMock(
             side_effect=[
-                AutoGLMDecision("incomplete", message="Save effect is unknown"),
+                VisualDecision("incomplete", message="Save effect is unknown"),
                 illegal,
-                AutoGLMDecision(
-                    "action", calls=(AutoGLMToolCall("click", {"index": 1}),)
+                VisualDecision(
+                    "action", calls=(VisualToolCall("click", {"index": 1}),)
                 ),
             ]
         )
@@ -256,7 +256,7 @@ def test_invalid_corrective_mode_never_calls_api(monkeypatch, mode):
                 lambda _: pytest.fail("Invalid corrective request called the API"),
             )
         ) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model=None if mode == "no_reasoner" else "glm-5.3-flash",
                 api_key_env="GLM_API_KEY",
@@ -317,7 +317,7 @@ def test_disabled_recovery_and_existing_rejection_limit_are_preserved(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 api_key_env="GLM_API_KEY",

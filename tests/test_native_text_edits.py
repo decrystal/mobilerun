@@ -7,18 +7,19 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from test_decision_visual_guards import _runtime
+from test_native_text_references import BODY, destination
+from test_task_evidence import task
+
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import AutoGLMFallback, parse_autoglm_decision
 from mobilerun.agent.decision.native_edit import resolve_native_text_edit
 from mobilerun.agent.decision.native_text import (
     text_digest,
     validate_native_text_receipt,
 )
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback, parse_visual_decision
 from mobilerun.config_manager.config_manager import JevConfig
-from test_decision_visual_guards import _runtime
-from test_native_text_references import BODY, destination
-from test_task_evidence import task
 
 GOAL = "Preserve the existing body and add the requested text"
 ADDED = "\n\n 新增段落 🌿 \n"
@@ -54,7 +55,7 @@ def parse(
         if structured
         else 'do(action="Type", text_edit=' + repr(value["text_edit"]) + ")"
     )
-    return parse_autoglm_decision(
+    return parse_visual_decision(
         content,
         ui_state=page,
         screenshot_size=(400, 800),
@@ -169,7 +170,7 @@ def test_unsupported_or_ambiguous_edit_requests_have_no_action(change):
 )
 def test_duplicate_keys_and_executable_phone_edit_values_are_refused(content):
     state, page = state_and_page()
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         content,
         ui_state=page,
         screenshot_size=(400, 800),
@@ -255,7 +256,7 @@ def test_one_http_edit_binds_the_private_source_index_and_current_preexecution_g
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="reasoner", api_key_env="GLM_API_KEY", client=client
             )
             adapter._goal, adapter._completion_contract = GOAL, task(GOAL, "process")
@@ -331,14 +332,14 @@ def test_edit_repair_replaces_the_same_full_result_once_without_appending_twice(
                 kwargs["ui_state"],
                 kwargs["task_state"]["ledger"]["current_observation"],
             )
-            from mobilerun.agent.decision.autoglm import (
-                AutoGLMDecision,
-                AutoGLMToolCall,
+            from mobilerun.agent.decision.visual_fallback import (
+                VisualDecision,
+                VisualToolCall,
             )
 
-            return AutoGLMDecision(
+            return VisualDecision(
                 "action",
-                (AutoGLMToolCall("type", {"text": value, "clear": True}),),
+                (VisualToolCall("type", {"text": value, "clear": True}),),
                 input_source=receipt,
             )
 
@@ -400,7 +401,7 @@ def test_edit_repair_replaces_the_same_full_result_once_without_appending_twice(
 def test_old_or_disabled_adapter_receives_only_the_existing_source_capability(
     enabled, capable
 ):
-    from mobilerun.agent.decision.autoglm import AutoGLMDecision, AutoGLMToolCall
+    from mobilerun.agent.decision.visual_fallback import VisualDecision, VisualToolCall
 
     class Adapter:
         supports_native_text_references = True
@@ -409,8 +410,8 @@ def test_old_or_disabled_adapter_receives_only_the_existing_source_capability(
 
         async def decide(self, **kwargs):
             self.kwargs = kwargs
-            return AutoGLMDecision(
-                "action", (AutoGLMToolCall("type", {"text": "literal", "clear": True}),)
+            return VisualDecision(
+                "action", (VisualToolCall("type", {"text": "literal", "clear": True}),)
             )
 
     state, page = state_and_page()

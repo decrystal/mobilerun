@@ -10,8 +10,8 @@ from test_decision_visual_guards import _image, _runtime
 from test_task_evidence import ui
 from test_visual_query_scope import contract, response
 
-from mobilerun.agent.decision.autoglm import AutoGLMFallback
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback
 from mobilerun.config_manager.config_manager import JevConfig
 
 GOAL = "What balance was shown for the Travel account in the earlier captured screen?"
@@ -171,7 +171,7 @@ def test_actual_runtime_review_obeys_visible_history_exact_uploads_and_original_
             (), reference="current" if mode == "current_scope" else "observed"
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 query_scopes=True,

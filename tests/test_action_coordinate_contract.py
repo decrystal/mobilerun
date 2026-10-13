@@ -10,7 +10,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from mobilerun.agent.decision.autoglm import AutoGLMFallback, parse_autoglm_decision
+from mobilerun.agent.decision.visual_fallback import VisualFallback, parse_visual_decision
 from mobilerun.agent.utils.signatures import build_tool_registry
 from mobilerun.tools.ui.state import UIState
 
@@ -33,7 +33,7 @@ def parse(
     size=(1080, 2400),
     tools=("click_at", "long_press_at", "swipe", "click"),
 ):
-    return parse_autoglm_decision(
+    return parse_visual_decision(
         json.dumps(action),
         ui_state=state or ui(),
         screenshot_size=size,
@@ -349,7 +349,7 @@ def test_reasoning_request_declares_the_actual_frame_and_parses_one_wrapped_acti
             elements=[{"index": 7, "text": "Save", "bounds": "610,1300,800,1516"}]
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await AutoGLMFallback(
+            return await VisualFallback(
                 client=client, reasoning_model="glm-4.6v"
             ).decide(
                 goal="Save the current record",

@@ -515,6 +515,38 @@ def test_phone_equivalence_never_changes_digits_prefix_or_dial_operators(
     assert result.status == "mismatch" and result.reason == "different_value"
 
 
+def test_app_label_prefix_confirms_only_when_native_caret_matches_typed_length():
+    target = _capture(_ui([_input()]))
+    after = _ui(
+        [_input(value="搜尋, meovv anna 壁纸", textSelectionStart=13, textSelectionEnd=13)]
+    )
+    result = asyncio.run(read_input_value(SimpleNamespace(), after, target, "meovv anna 壁纸"))
+    assert result.status == "confirmed" and result.reason == "labelled_exact_value"
+
+
+@pytest.mark.parametrize(
+    "actual,selection",
+    [
+        ("搜尋, meovv anna 壁纸", (17, 17)),  # prefix is real content
+        ("搜尋, meovv anna 壁纸", None),  # no caret evidence
+        ("搜尋, meovv anna 壁纸", (0, 13)),  # selection, not a collapsed caret
+        ("搜尋, meovv anna 壁", (12, 12)),  # value is not the typed text
+        ("搜尋, 😀", (1, 1)),  # emoji is 2 UTF-16 units
+    ],
+)
+def test_app_label_prefix_without_matching_caret_stays_a_mismatch(actual, selection):
+    expected = "😀" if "😀" in actual else "meovv anna 壁纸"
+    extra = (
+        {"textSelectionStart": selection[0], "textSelectionEnd": selection[1]}
+        if selection
+        else {}
+    )
+    target = _capture(_ui([_input()]))
+    after = _ui([_input(value=actual, **extra)])
+    result = asyncio.run(read_input_value(SimpleNamespace(), after, target, expected))
+    assert result.status == "mismatch"
+
+
 @pytest.mark.parametrize("native_type", [None, 1, 2, True, -13, 0x100000003])
 def test_phone_hint_or_invalid_native_type_cannot_enable_value_normalization(
     native_type,

@@ -13,7 +13,6 @@ import pytest
 from PIL import Image
 
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import AutoGLMDecision, AutoGLMFallback
 from mobilerun.agent.decision.contracts import (
     ContractError,
     parse_grounded_review,
@@ -24,6 +23,7 @@ from mobilerun.agent.decision.input_verification import (
     read_input_value,
 )
 from mobilerun.agent.decision.task_state import TaskState, corroborate_nodes
+from mobilerun.agent.decision.visual_fallback import VisualDecision, VisualFallback
 from mobilerun.agent.fast_agent.xml_parser import ToolCall
 from mobilerun.tools.ui.state import UIState
 
@@ -308,7 +308,7 @@ def test_real_review_retry_reports_missing_image_and_requires_recaptured_referen
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 client=client,
@@ -416,7 +416,7 @@ def test_real_answer_format_retry_preserves_negative_answer_and_live_evidence(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 client=client,
@@ -481,9 +481,9 @@ def test_retry_diagnostics_drop_unknown_whole_observation_and_action_references(
     class InvalidReview(_Visual):
         async def decide(self, **kwargs):
             requests.append(kwargs)
-            return AutoGLMDecision(
+            return VisualDecision(
                 "error",
-                message="Completion reviewer returned invalid evidence.",
+                message="Completion reviewer returned invalid evidence.", format_error=True,
                 error_code="evidence_missing",
                 error_field="omitted_state_property",
                 error_refs=("O1:n0", "O9:image1", "private text", "O1", "A1", None, 8),
@@ -528,7 +528,7 @@ def test_multiscreen_review_uploads_bounded_actual_images_and_resets_between_tas
 ):
     monkeypatch.setenv("BIGMODEL_API_KEY", "test-secret")
     monkeypatch.setattr(
-        "mobilerun.agent.decision.autoglm._MAX_CACHED_IMAGES", cache_limit
+        "mobilerun.agent.decision.visual_fallback._MAX_CACHED_IMAGES", cache_limit
     )
     goal = "Count the observed entries"
     contract = task(goal)
@@ -578,7 +578,7 @@ def test_multiscreen_review_uploads_bounded_actual_images_and_resets_between_tas
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(reasoning_model="reasoner", client=client)
+            adapter = VisualFallback(reasoning_model="reasoner", client=client)
             adapter._goal = goal
             adapter._completion_contract = contract
             for index, picture in enumerate(pictures):
@@ -652,7 +652,7 @@ def test_reviewer_gets_exact_image_reference_and_available_ids_not_a_guessed_num
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(reasoning_model="reasoner", client=client)
+            adapter = VisualFallback(reasoning_model="reasoner", client=client)
             adapter._goal = goal
             adapter._completion_contract = contract
             return await adapter.decide(
@@ -734,7 +734,7 @@ def test_typed_reviewer_receives_current_native_boundary_provenance(monkeypatch)
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(reasoning_model="reasoner", client=client)
+            adapter = VisualFallback(reasoning_model="reasoner", client=client)
             adapter._goal = goal
             adapter._completion_contract = contract
             return await adapter.decide(
@@ -815,7 +815,7 @@ def test_real_adapter_prepares_once_and_reviews_historical_send_evidence(monkeyp
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(reasoning_model="reasoner", client=client)
+            adapter = VisualFallback(reasoning_model="reasoner", client=client)
             assert await adapter.prepare_task(goal=goal) is None
             assert await adapter.prepare_task(goal=goal) is None
             result = await adapter.decide(
@@ -1113,7 +1113,7 @@ def test_prepared_visual_actions_route_large_context_to_reasoner_without_dispatc
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(reasoning_model="reasoner", client=client)
+            adapter = VisualFallback(reasoning_model="reasoner", client=client)
             assert await adapter.prepare_task(goal=goal) is None
             buf = BytesIO()
             Image.new("RGB", (400, 800)).save(buf, format="PNG")
@@ -1127,7 +1127,8 @@ def test_prepared_visual_actions_route_large_context_to_reasoner_without_dispatc
             assert result.status == "action" and result.model == "reasoner"
 
     asyncio.run(run())
-    assert requests[-1]["model"] == "reasoner" and "response_format" not in requests[-1]
+    assert requests[-1]["model"] == "reasoner"
+    assert requests[-1]["response_format"] == {"type": "json_object"}
 
 
 def test_pure_operation_contract_cannot_require_query_answer():

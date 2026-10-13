@@ -6,10 +6,11 @@ import json
 
 import httpx
 import pytest
-from mobilerun.agent.decision.autoglm import AutoGLMFallback
-from mobilerun.agent.decision.task_state import TaskState
 from test_decision_visual_guards import _image, _runtime, _ui
 from test_task_evidence import task
+
+from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback
 
 
 @pytest.mark.parametrize(
@@ -93,7 +94,7 @@ def test_guard_refresh_uses_actual_native_evidence_and_rejects_hidden_images(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 base_url="https://example.invalid/v1",
@@ -166,7 +167,7 @@ def test_native_review_projection_does_not_mutate_caller_ledger(monkeypatch):
                 lambda _: httpx.Response(503, json={"error": "offline failure"}),
             )
         ) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="glm-5.3-flash",
                 api_key_env="GLM_API_KEY",
                 base_url="https://example.invalid/v1",
@@ -202,7 +203,7 @@ def test_native_mode_cannot_silently_change_an_action_request_or_ungrounded_revi
             transport=httpx.MockTransport(forbidden)
         ) as client:
             goal = "Leave the record open"
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="glm-5.3-flash",
                 api_key_env="GLM_API_KEY",
                 client=client,

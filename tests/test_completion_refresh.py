@@ -6,14 +6,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from mobilerun.agent.decision.autoglm import AutoGLMDecision, AutoGLMToolCall
+from test_jev_first_runtime import config, runtime, ui_state
+from test_task_evidence import task
+
 from mobilerun.agent.decision.contracts import parse_grounded_review
 from mobilerun.agent.decision.jev import JevDecision
+from mobilerun.agent.decision.visual_fallback import VisualDecision, VisualToolCall
 from mobilerun.agent.fast_agent.events import FastAgentOutputEvent
 from mobilerun.agent.fast_agent.fast_agent import FastAgent
 from mobilerun.agent.fast_agent.xml_parser import ToolCall
-from test_jev_first_runtime import config, runtime, ui_state
-from test_task_evidence import task
 
 
 def setup_review(*, recovery=True):
@@ -72,7 +73,7 @@ def setup_review(*, recovery=True):
             runner.task_state.evidence(),
             runner.task_state.current_id,
         )
-        return AutoGLMDecision(**{k: v for k, v in parsed.items() if k != "missing"})
+        return VisualDecision(**{k: v for k, v in parsed.items() if k != "missing"})
 
     visual.decide = AsyncMock(side_effect=lambda **_: response())
     return runner, events, policy, visual, provider, driver, response
@@ -133,9 +134,9 @@ def test_changed_native_property_can_request_a_corrective_action_after_fresh_rev
         )
         assert runner.recover_completion_validation(reason)
         visual.decide = AsyncMock(
-            return_value=AutoGLMDecision(
+            return_value=VisualDecision(
                 "action",
-                calls=(AutoGLMToolCall("click", {"index": 1}),),
+                calls=(VisualToolCall("click", {"index": 1}),),
             )
         )
         selected = await runner.select(runner.goal, provider.ui)

@@ -6,7 +6,9 @@ import json
 
 import httpx
 import pytest
-from mobilerun.agent.decision.autoglm import AutoGLMFallback, _ledger_evidence
+from test_decision_visual_guards import _image, _runtime, _ui
+from test_task_evidence import review, task
+
 from mobilerun.agent.decision.contracts import ContractError
 from mobilerun.agent.decision.native_context import (
     ALIASES_FIELD,
@@ -14,9 +16,8 @@ from mobilerun.agent.decision.native_context import (
     expand_native_values,
 )
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback, _ledger_evidence
 from mobilerun.config_manager.config_manager import JevConfig
-from test_decision_visual_guards import _image, _runtime, _ui
-from test_task_evidence import review, task
 
 
 @pytest.mark.parametrize(
@@ -116,7 +117,7 @@ def test_omission_counts_remain_explicit_when_unique_values_exceed_budget():
 
 def test_only_capable_glm_adapter_receives_shared_values_and_jev_retains_ordinary_fields():
     body = "captured value " * 40
-    adapter = AutoGLMFallback(
+    adapter = VisualFallback(
         model="glm-5.3-flash",
         reasoning_model="glm-5.3-flash",
         base_url="https://example.invalid/v1",
@@ -203,7 +204,7 @@ def test_one_http_review_expands_values_and_still_rejects_live_changes(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 base_url="https://example.invalid/v1",

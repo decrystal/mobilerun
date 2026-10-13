@@ -11,13 +11,13 @@ from test_collection_query import page
 from test_decision_visual_guards import _runtime
 from test_task_evidence import task, ui
 
-from mobilerun.agent.decision.autoglm import AutoGLMFallback
 from mobilerun.agent.decision.native_query_binding import (
     NativeQueryBindingError,
     bind_native_queries,
     corroborate_native_queries,
 )
 from mobilerun.agent.decision.task_state import TaskState, observed_nodes
+from mobilerun.agent.decision.visual_fallback import VisualFallback
 from mobilerun.config_manager.config_manager import JevConfig
 
 GOAL = "Count the records in the selected list"
@@ -106,7 +106,7 @@ async def reviewed_query(
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        adapter = AutoGLMFallback(
+        adapter = VisualFallback(
             model="glm-5.3-flash",
             reasoning_model="glm-5.3-flash",
             thinking_mode="disabled",

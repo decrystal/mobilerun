@@ -10,7 +10,6 @@ from test_decision_visual_guards import _runtime
 from test_native_query_binding import collection
 from test_task_evidence import task, ui
 
-from mobilerun.agent.decision.autoglm import AutoGLMFallback, _ledger_evidence
 from mobilerun.agent.decision.contracts import (
     ContractError,
     parse_grounded_review,
@@ -22,6 +21,7 @@ from mobilerun.agent.decision.native_query_binding import (
 )
 from mobilerun.agent.decision.runtime import DecisionRuntime
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback, _ledger_evidence
 from mobilerun.config_manager.config_manager import JevConfig
 
 GOAL = "Count the records in the currently displayed Active list"
@@ -261,7 +261,7 @@ def test_scope_switch_requires_a_real_boolean(switch):
     with pytest.raises(ValueError):
         JevConfig(query_scopes=switch)
     with pytest.raises(ValueError):
-        AutoGLMFallback(query_scopes=switch)
+        VisualFallback(query_scopes=switch)
     with pytest.raises(ContractError):
         parse_task_contract(
             json.dumps(scoped_contract()), GOAL, require_query_scopes=switch
@@ -294,7 +294,7 @@ def test_existing_prepare_stage_requires_scope_and_uses_its_existing_single_retr
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 api_key_env="GLM_API_KEY",
@@ -504,7 +504,7 @@ def test_range_protocol_feedback_uses_the_existing_retry_without_relaxing_the_gu
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 client=client,

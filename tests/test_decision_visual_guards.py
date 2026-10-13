@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 from PIL import Image
 
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import AutoGLMDecision, AutoGLMToolCall
 from mobilerun.agent.decision.jev import JevDecision
 from mobilerun.agent.decision.runtime import DecisionRuntime
+from mobilerun.agent.decision.visual_fallback import VisualDecision, VisualToolCall
 from mobilerun.agent.fast_agent.xml_parser import ToolCall
 from mobilerun.tools.ui.state import UIState
 
@@ -69,8 +69,8 @@ class _Policy:
 
 class _Visual:
     def __init__(self, result=None):
-        self.result = result or AutoGLMDecision(
-            "action", calls=(AutoGLMToolCall("click_at", {"x": 100, "y": 200}),)
+        self.result = result or VisualDecision(
+            "action", calls=(VisualToolCall("click_at", {"x": 100, "y": 200}),)
         )
         self.calls = 0
 
@@ -88,7 +88,7 @@ def _runtime(ui=None, *, policy=None, visual=None, verifier=None, provider=None)
         model="jev-1.13.0",
         timeout=1,
         confidence_threshold=0.5,
-        fallback="autoglm",
+        fallback="visual",
         fallback_model="autoglm-phone",
         fallback_timeout=1,
         text_values=[],
@@ -205,10 +205,10 @@ def test_swipe_region_ignores_remote_banner_but_rejects_overlay_across_path():
         banner = {"index": 2, "text": "Ad A", "bounds": "0,0,400,80"}
         initial = _ui([container, banner])
         visual = _Visual(
-            AutoGLMDecision(
+            VisualDecision(
                 "action",
                 calls=(
-                    AutoGLMToolCall(
+                    VisualToolCall(
                         "swipe", {"coordinate": [350, 400], "coordinate2": [50, 400]}
                     ),
                 ),
@@ -246,9 +246,9 @@ def test_typing_ignores_remote_ads_but_rejects_changed_input_value():
         runtime, _, provider = _runtime(
             initial,
             visual=_Visual(
-                AutoGLMDecision(
+                VisualDecision(
                     "action",
-                    calls=(AutoGLMToolCall("type", {"text": "new", "clear": True}),),
+                    calls=(VisualToolCall("type", {"text": "new", "clear": True}),),
                 )
             ),
         )
@@ -341,7 +341,7 @@ def test_visual_done_rechecks_completion_after_inference():
             initial,
             provider=AdvancingProvider(initial),
             verifier=verifier,
-            visual=_Visual(AutoGLMDecision("done", message="页面已加载")),
+            visual=_Visual(VisualDecision("done", message="页面已加载")),
         )
 
         selection = await runtime.select("等待页面加载完成", initial)

@@ -12,11 +12,6 @@ import pytest
 from llama_index.core.base.llms.types import ChatMessage, ChatResponse
 
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import (
-    AutoGLMDecision,
-    AutoGLMToolCall,
-    parse_autoglm_decision,
-)
 from mobilerun.agent.decision.jev import JevDecision, JevDecisionPolicy
 from mobilerun.agent.decision.runtime import (
     DecisionRuntime,
@@ -25,6 +20,11 @@ from mobilerun.agent.decision.runtime import (
     launch_app,
     register_decision_tools,
     validate_completion_criteria,
+)
+from mobilerun.agent.decision.visual_fallback import (
+    VisualDecision,
+    VisualToolCall,
+    parse_visual_decision,
 )
 from mobilerun.agent.droid.state import MobileAgentState
 from mobilerun.agent.fast_agent.fast_agent import FastAgent
@@ -72,7 +72,7 @@ def config(**overrides):
             "model": "jev-1.13.0",
             "timeout": 1,
             "confidence_threshold": 0.5,
-            "fallback": "autoglm",
+            "fallback": "visual",
             "fallback_model": "autoglm-phone",
             "reasoning_model": "glm-4.6v",
             "fallback_base_url": "https://open.bigmodel.cn/api/paas/v4",
@@ -139,8 +139,8 @@ class Visual:
     def __init__(self, events, result=None):
         self.events = events
         self.requests = []
-        self.result = result or AutoGLMDecision(
-            "action", calls=(AutoGLMToolCall("click_at", {"x": 100, "y": 200}),)
+        self.result = result or VisualDecision(
+            "action", calls=(VisualToolCall("click_at", {"x": 100, "y": 200}),)
         )
 
     async def decide(self, **kwargs):
@@ -247,7 +247,7 @@ def test_initial_matching_state_requires_model_done_before_completion():
     runner, events, policy, visual, _ = runtime(
         settings=config(completion={"package": "com.android.settings"}),
         policy_result=JevDecision("done", operation="DONE", confidence=1),
-        visual_result=AutoGLMDecision("done", message="Settings is visible."),
+        visual_result=VisualDecision("done", message="Settings is visible."),
     )
     selection = asyncio.run(runner.select("打开设置", runner.ctx.ui))
     assert selection.source == "verifier"
@@ -287,7 +287,7 @@ def test_jev_done_is_checked_after_inference_and_rechecked_before_execution():
     runner, _, policy, _, provider = runtime(
         ui=ui_state(packageName="com.android.launcher"),
         settings=config(completion={"package": "com.xingin.xhs"}),
-        visual_result=AutoGLMDecision("done", message="The app is open."),
+        visual_result=VisualDecision("done", message="The app is open."),
     )
 
     async def finish(**kwargs):
@@ -347,10 +347,10 @@ def test_jev_failure_then_autoglm_order_and_feedback_are_explicit():
 
 @pytest.mark.parametrize("change", ["meaning", "bounds", "overlay", "package"])
 def test_native_fallback_reference_is_rechecked_before_device_input(change):
-    from mobilerun.agent.decision.autoglm import parse_autoglm_decision
+    from mobilerun.agent.decision.visual_fallback import parse_visual_decision
 
     state = ui_state()
-    proposed = parse_autoglm_decision(
+    proposed = parse_visual_decision(
         '{"action":"Tap","index":2}',
         ui_state=state,
         screenshot_size=(400, 800),
@@ -388,7 +388,7 @@ def test_explicit_assertions_still_reject_incorrect_model_completion():
     runner, events, _, _, _ = runtime(
         settings=config(completion={"text_all": ["not on this screen"]}),
         policy_result=JevDecision("done", operation="DONE", confidence=1),
-        visual_result=AutoGLMDecision("done", message="完成了"),
+        visual_result=VisualDecision("done", message="完成了"),
     )
     selection = asyncio.run(runner.select("WLAN已打开", runner.ctx.ui))
     assert selection.stop is True
@@ -409,7 +409,7 @@ def test_verified_final_answer_reaches_completion_tool_and_shared_state(
             completion={"package": "com.android.settings"} if with_assertions else {}
         ),
         policy_result=JevDecision("done", operation="DONE", confidence=1),
-        visual_result=AutoGLMDecision(
+        visual_result=VisualDecision(
             "done", message="Verified from device", final_answer="14:00"
         ),
     )
@@ -443,7 +443,7 @@ def test_agent_can_finish_without_caller_assertions_after_visual_review():
     )
     runner, events, policy, visual, provider = runtime(
         policy_result=JevDecision("done", operation="DONE", confidence=1),
-        visual_result=AutoGLMDecision(
+        visual_result=VisualDecision(
             "done",
             message="The requested WLAN page is visible.",
             assessments=assessments,
@@ -476,11 +476,11 @@ def test_hallucinated_completion_evidence_requires_correction(checks):
     )
     visual.decide = AsyncMock(
         side_effect=[
-            AutoGLMDecision(
+            VisualDecision(
                 "done", message="Downloads is visible", completion_checks=checks
             ),
-            AutoGLMDecision(
-                "action", calls=(AutoGLMToolCall("click_at", {"x": 100, "y": 200}),)
+            VisualDecision(
+                "action", calls=(VisualToolCall("click_at", {"x": 100, "y": 200}),)
             ),
         ]
     )
@@ -498,7 +498,7 @@ def test_hallucinated_completion_evidence_requires_correction(checks):
 def test_generated_completion_checks_are_corroborated_without_user_flags():
     runner, _, _, _, _ = runtime(
         policy_result=JevDecision("done", operation="DONE"),
-        visual_result=AutoGLMDecision(
+        visual_result=VisualDecision(
             "done", message="WLAN is visible", completion_checks={"text_all": ["WLAN"]}
         ),
     )
@@ -517,8 +517,8 @@ def test_text_grounding_allows_only_a_long_press():
             reason="text_long_press_requires_visual_grounding",
             operation="LONG_PRESS",
         ),
-        visual_result=AutoGLMDecision(
-            "action", calls=(AutoGLMToolCall("long_press_at", {"x": 100, "y": 200}),)
+        visual_result=VisualDecision(
+            "action", calls=(VisualToolCall("long_press_at", {"x": 100, "y": 200}),)
         ),
     )
     runner.registry.tools["long_press_at"] = object()
@@ -536,7 +536,7 @@ def test_uncertain_done_requests_review_instead_of_another_device_action():
             operation="DONE",
             confidence=0.3,
         ),
-        visual_result=AutoGLMDecision(
+        visual_result=VisualDecision(
             "done", message="WLAN visible", completion_checks={"text_all": ["WLAN"]}
         ),
     )
@@ -551,10 +551,10 @@ def test_invalid_review_check_schema_retries_review_without_device_input():
     )
     visual.decide = AsyncMock(
         side_effect=[
-            AutoGLMDecision(
+            VisualDecision(
                 "done", message="Menu visible", completion_checks={"menu_visible": True}
             ),
-            AutoGLMDecision(
+            VisualDecision(
                 "done", message="WLAN visible", completion_checks={"text_all": ["WLAN"]}
             ),
         ]
@@ -616,9 +616,9 @@ def test_action_only_state_evidence_gets_requirement_feedback_and_one_fresh_retr
         parse_grounded_review(json.dumps(review), contract, state.evidence(), "O1")
     assert rejected.value.code == "effect_unverified"
     assert rejected.value.field == "evidence_refs"
-    error = AutoGLMDecision(
+    error = VisualDecision(
         "error",
-        message="Completion reviewer returned invalid evidence.",
+        message="Completion reviewer returned invalid evidence.", format_error=True,
         error_code=rejected.value.code,
         error_field=rejected.value.field,
     )
@@ -634,7 +634,7 @@ def test_action_only_state_evidence_gets_requirement_feedback_and_one_fresh_retr
             provider.ui = after
             return error
         return (
-            AutoGLMDecision(
+            VisualDecision(
                 "done",
                 message="The WLAN page was observed",
                 completion_checks={"text_all": ["WLAN"]},
@@ -664,15 +664,15 @@ def test_contradictory_package_retries_review_once_without_device_actions(correc
     runner, _, _, visual, _ = runtime(
         policy_result=JevDecision("done", operation="DONE")
     )
-    error = AutoGLMDecision(
+    error = VisualDecision(
         "error",
-        message="Completion reviewer contradicted the observed foreground package.",
+        message="Completion reviewer contradicted the observed foreground package.", format_error=True,
     )
     visual.decide = AsyncMock(
         side_effect=[
             error,
             (
-                AutoGLMDecision(
+                VisualDecision(
                     "done",
                     message="WLAN visible",
                     completion_checks={"text_all": ["WLAN"]},
@@ -721,9 +721,9 @@ def test_final_review_can_continue_after_a_premature_visual_completion_claim():
     runner, _, _, visual, _ = runtime(policy_result=JevDecision("fallback"))
     visual.decide = AsyncMock(
         side_effect=[
-            AutoGLMDecision("done", message="The menu was open earlier."),
-            AutoGLMDecision(
-                "action", calls=(AutoGLMToolCall("click_at", {"x": 100, "y": 200}),)
+            VisualDecision("done", message="The menu was open earlier."),
+            VisualDecision(
+                "action", calls=(VisualToolCall("click_at", {"x": 100, "y": 200}),)
             ),
         ]
     )
@@ -748,11 +748,11 @@ def test_rejected_semantic_review_requests_correction_without_completing(
     )
     visual.decide = AsyncMock(
         side_effect=[
-            AutoGLMDecision(
+            VisualDecision(
                 "incomplete", message="App info is not visible", model="review-model"
             ),
-            AutoGLMDecision(
-                "action", calls=(AutoGLMToolCall("click_at", {"x": 100, "y": 200}),)
+            VisualDecision(
+                "action", calls=(VisualToolCall("click_at", {"x": 100, "y": 200}),)
             ),
         ]
     )
@@ -773,9 +773,9 @@ def test_repeated_completion_claims_after_rejection_stop_without_actions():
     )
     visual.decide = AsyncMock(
         side_effect=[
-            AutoGLMDecision("incomplete", message="Still a folder"),
-            AutoGLMDecision("done", message="Complete"),
-            AutoGLMDecision("incomplete", message="Still a folder"),
+            VisualDecision("incomplete", message="Still a folder"),
+            VisualDecision("done", message="Complete"),
+            VisualDecision("incomplete", message="Still a folder"),
         ]
     )
     selected = asyncio.run(runner.select("Open the app info menu", runner.ctx.ui))
@@ -795,7 +795,7 @@ def test_matching_package_assertion_cannot_accept_a_page_changed_during_review()
         provider.ui = ui_state(
             [{"index": 1, "text": "Different page", "bounds": "0,0,400,80"}]
         )
-        return AutoGLMDecision(
+        return VisualDecision(
             "done", message="The previously observed WLAN page was visible."
         )
 
@@ -808,9 +808,9 @@ def test_matching_package_assertion_cannot_accept_a_page_changed_during_review()
 def test_progress_records_executed_actions_and_next_observation():
     runner, _, _, _, provider = runtime(
         policy_result=JevDecision("fallback"),
-        visual_result=AutoGLMDecision(
+        visual_result=VisualDecision(
             "action",
-            calls=(AutoGLMToolCall("click_at", {"x": 100, "y": 100}),),
+            calls=(VisualToolCall("click_at", {"x": 100, "y": 100}),),
             progress="Inspect the network settings, then return home.",
         ),
     )
@@ -899,7 +899,7 @@ def test_completion_guard_retains_actual_binding_and_fresh_rejection_inputs(chan
         ui,
     )
     runner.bind_completion_evidence(
-        AutoGLMDecision(
+        VisualDecision(
             "done",
             evidence_refs=("O1:n0", "O1:image1"),
             verification_refs=("O1:n0", "O1:image1"),
@@ -972,7 +972,7 @@ def test_reviewed_completion_rechecks_outcome_without_freezing_live_readouts(cha
             completion={"text_all": ["00:01"]} if changed == "assertion" else {}
         ),
         policy_result=JevDecision("done"),
-        visual_result=AutoGLMDecision(
+        visual_result=VisualDecision(
             "done",
             message="Pause is visible",
             completion_checks={"text_all": ["Pause"]},
@@ -1230,9 +1230,9 @@ def test_resolve_input_limits_fallback_to_text_when_fresh_field_is_focused():
     runner, _, _, visual, _ = runtime(
         ui=ui,
         policy_result=JevDecision("fallback", reason="text_value_required"),
-        visual_result=AutoGLMDecision(
+        visual_result=VisualDecision(
             "action",
-            calls=(AutoGLMToolCall("type", {"text": "example.com", "clear": True}),),
+            calls=(VisualToolCall("type", {"text": "example.com", "clear": True}),),
         ),
     )
     selected = asyncio.run(runner.select("Enter example.com", ui))
@@ -1344,6 +1344,17 @@ def test_launch_only_allows_current_installed_inventory(inventory_key):
     asyncio.run(run())
 
 
+def test_launch_records_replayable_start_app_macro():
+    from mobilerun.macro.recorder import MacroRecorder
+
+    driver = Driver([], apps=[{"package_name": "com.example.maps"}])
+    ctx = SimpleNamespace(driver=driver, ui=None, macro_recorder=MacroRecorder())
+    assert asyncio.run(launch_app("com.example.maps", ctx=ctx)).success
+    assert asyncio.run(launch_app("com.evil.not_installed", ctx=ctx)).success is False
+    assert [a["action_type"] for a in ctx.macro_recorder.actions] == ["start_app"]
+    assert ctx.macro_recorder.actions[0]["package"] == "com.example.maps"
+
+
 def test_registry_registration_uses_the_actual_registry_contract():
     registry = ToolRegistry()
     registry.register("open_app", lambda: None, {}, "Would call another LLM")
@@ -1451,19 +1462,19 @@ def run_workflow(mode="jev", stale=False):
                 if kwargs.get("completion_review") and kwargs["ui_state"] is completed:
                     self.events.append("autoglm")
                     self.requests.append(kwargs)
-                    return AutoGLMDecision(
+                    return VisualDecision(
                         "done", message="The requested connected state is visible."
                     )
                 return await super().decide(**kwargs)
 
         visual = WorkflowVisual(
-            events, AutoGLMDecision("done", message="完成") if mode == "done" else None
+            events, VisualDecision("done", message="完成") if mode == "done" else None
         )
         if mode in {"format_recovery", "format_repeat", "network_error"}:
             errors = {
-                "format_recovery": "AutoGLM did not return a complete action.",
-                "format_repeat": "AutoGLM returned an invalid or unavailable action.",
-                "network_error": "AutoGLM network request failed; no action was dispatched.",
+                "format_recovery": "Visual model did not return a complete action.",
+                "format_repeat": "Visual model returned an invalid or unavailable action.",
+                "network_error": "Visual model network request failed; no action was dispatched.",
             }
 
             class RetryingVisual(WorkflowVisual):
@@ -1473,7 +1484,11 @@ def run_workflow(mode="jev", stale=False):
                     events.append("autoglm")
                     self.requests.append(kwargs)
                     if mode != "format_recovery" or len(self.requests) == 1:
-                        return AutoGLMDecision("error", message=errors[mode])
+                        return VisualDecision(
+                            "error",
+                            message=errors[mode],
+                            format_error=mode != "network_error",
+                        )
                     assert not any(e.startswith("execute:") for e in events)
                     return self.result
 
@@ -1482,7 +1497,7 @@ def run_workflow(mode="jev", stale=False):
             jev=config(
                 enabled=True,
                 completion={"text_all": ["已连接"]},
-                fallback="llm" if mode.startswith("llm") else "autoglm",
+                fallback="llm" if mode.startswith("llm") else "visual",
             ),
             fast_agent=SimpleNamespace(
                 vision=not mode.startswith("llm"), parallel_tools=False
@@ -1633,10 +1648,10 @@ class FrameDriver(Driver):
 
 
 def visual_navigation_runtime(tool_name="system_button", arguments=None):
-    action = AutoGLMDecision(
+    action = VisualDecision(
         "action",
         calls=(
-            AutoGLMToolCall(
+            VisualToolCall(
                 tool_name, arguments if arguments is not None else {"button": "back"}
             ),
         ),
@@ -1758,9 +1773,9 @@ def test_format_retry_observes_new_state_and_image_before_asking_again():
             if len(self.requests) == 1:
                 provider.ui = after
                 runner.ctx.driver.frame = b"new-image-after-invalid-response"
-                return AutoGLMDecision(
+                return VisualDecision(
                     "error",
-                    message="AutoGLM returned an invalid or unavailable action.",
+                    message="Visual model returned an invalid or unavailable action.", format_error=True,
                 )
             return self.result
 
@@ -1790,7 +1805,7 @@ def test_rejected_type_target_feedback_uses_fresh_state_without_repairing_or_ext
     runner, events, _, _, provider = visual_navigation_runtime()
     before = provider.ui
     after = ui_state([], currentApp="Settings.OtherEditor")
-    rejected = parse_autoglm_decision(
+    rejected = parse_visual_decision(
         '{"action":"Type","text":"private payload","index":7}',
         ui_state=SimpleNamespace(),
         screenshot_size=(0, 0),
@@ -1834,9 +1849,9 @@ def test_untrusted_argument_diagnostics_are_filtered_before_trace_and_retry_feed
     runner, _, _, visual, _ = runtime(
         policy_result=JevDecision("fallback", reason="no_candidates"),
     )
-    error = AutoGLMDecision(
+    error = VisualDecision(
         "error",
-        message="AutoGLM returned an invalid or unavailable action.",
+        message="Visual model returned an invalid or unavailable action.", format_error=True,
         error_code="unknown_argument",
         error_field="arguments",
         error_argument_fields=(
@@ -1881,17 +1896,17 @@ def test_real_workflow_repeated_format_failure_stops_after_one_retry_without_inp
 @pytest.mark.parametrize(
     "message",
     [
-        "AutoGLM network request failed; no action was dispatched.",
-        "AutoGLM request timed out; no action was dispatched.",
-        "AutoGLM request failed (HTTP 429).",
-        "AutoGLM request failed (HTTP 503).",
-        "AutoGLM returned an invalid API response.",
+        "Visual model network request failed; no action was dispatched.",
+        "Visual model request timed out; no action was dispatched.",
+        "Visual model request failed (HTTP 429).",
+        "Visual model request failed (HTTP 503).",
+        "Visual model returned an invalid API response.",
     ],
 )
 def test_visual_transport_and_api_errors_do_not_use_format_retry(message):
     runner, events, _, visual, _ = runtime(
         policy_result=JevDecision("fallback", reason="request_timeout"),
-        visual_result=AutoGLMDecision("error", message=message),
+        visual_result=VisualDecision("error", message=message),
     )
     selected = asyncio.run(runner.select("打开WLAN", runner.ctx.ui))
     assert selected.stop

@@ -11,16 +11,16 @@ import httpx
 import pytest
 from PIL import Image
 
-from mobilerun.agent.decision.autoglm import (
+from mobilerun.agent.decision.jev import control_observations
+from mobilerun.agent.decision.visual_fallback import (
     BIGMODEL_CHAT_URL,
-    AutoGLMDecision,
-    AutoGLMFallback,
+    VisualDecision,
+    VisualFallback,
     _merge_required_checks,
     action_argument_diagnostic,
-    parse_autoglm_decision,
     parse_completion_review,
+    parse_visual_decision,
 )
-from mobilerun.agent.decision.jev import control_observations
 from mobilerun.agent.utils.signatures import build_tool_registry
 from mobilerun.tools.ui.state import UIState
 
@@ -43,7 +43,7 @@ def test_rejected_progress_fields_explain_schema_without_becoming_actions(
     action = {"action": "Tap", "index": 2, alias: "untrusted note"}
     if with_canonical:
         action["progress"] = "different note"
-    decision = parse_autoglm_decision(
+    decision = parse_visual_decision(
         json.dumps(action),
         ui_state=SimpleNamespace(),
         screenshot_size=(0, 0),
@@ -67,7 +67,7 @@ def test_type_target_is_rejected_and_not_repaired_by_argument_diagnostics(struct
         if structured
         else 'do(action="Type", text="private value", index=2)'
     )
-    decision = parse_autoglm_decision(
+    decision = parse_visual_decision(
         content,
         ui_state=SimpleNamespace(),
         screenshot_size=(0, 0),
@@ -84,7 +84,7 @@ def test_type_target_is_rejected_and_not_repaired_by_argument_diagnostics(struct
 
 def test_unknown_fields_and_values_do_not_escape_into_protocol_diagnostics():
     secret = "sk-private-secret"
-    decision = parse_autoglm_decision(
+    decision = parse_visual_decision(
         json.dumps({"action": "Back", secret: {"index": 2, "text": secret}}),
         ui_state=SimpleNamespace(),
         screenshot_size=(0, 0),
@@ -100,7 +100,7 @@ def test_unknown_fields_and_values_do_not_escape_into_protocol_diagnostics():
 
 
 def test_argument_diagnostics_filter_injected_schema_metadata_and_legacy_results():
-    decision = AutoGLMDecision(
+    decision = VisualDecision(
         "error",
         error_code="unknown_argument",
         error_field="arguments",
@@ -122,7 +122,7 @@ def test_argument_diagnostics_filter_injected_schema_metadata_and_legacy_results
         "rejected_known_fields": ["index"],
         "allowed_arguments": ["text"],
     }
-    assert action_argument_diagnostic(AutoGLMDecision("error")) is None
+    assert action_argument_diagnostic(VisualDecision("error")) is None
     assert (
         action_argument_diagnostic(SimpleNamespace(error_code="unknown_argument"))
         is None
@@ -137,7 +137,7 @@ def test_structured_progress_alias_keeps_exact_type_and_raw_response(wrapped):
         "progress_note": "Input, then copy",
     }
     content = json.dumps([action] if wrapped else action)
-    decision = parse_autoglm_decision(
+    decision = parse_visual_decision(
         content,
         ui_state=_ui(),
         screenshot_size=(1080, 2400),
@@ -167,7 +167,7 @@ def test_structured_progress_alias_keeps_exact_type_and_raw_response(wrapped):
     ],
 )
 def test_progress_alias_does_not_accept_ambiguity_bad_targets_or_pixel_units(action):
-    decision = parse_autoglm_decision(
+    decision = parse_visual_decision(
         json.dumps(action),
         ui_state=_ui(),
         screenshot_size=(1080, 2400),
@@ -186,7 +186,7 @@ def test_single_fenced_swipe_preserves_explicit_pixels_and_one_action(language):
         model_screenshot_width=922,
         model_screenshot_height=2048,
     )
-    decision = parse_autoglm_decision(
+    decision = parse_visual_decision(
         f"```{language}\n{content}\n```",
         ui_state=ui,
         screenshot_size=(922, 2048),
@@ -220,7 +220,7 @@ def test_single_fenced_swipe_preserves_explicit_pixels_and_one_action(language):
 def test_fence_support_rejects_ambiguity_batches_code_and_unspecified_pixel_units(
     content,
 ):
-    decision = parse_autoglm_decision(
+    decision = parse_visual_decision(
         content,
         ui_state=_ui(),
         screenshot_size=(1080, 2400),
@@ -244,6 +244,71 @@ def _ui(**kwargs):
     return UIState(**values)
 
 
+@pytest.mark.parametrize("recovery,json_mode", [(True, True), (False, False)])
+def test_only_json_action_requests_constrain_the_response_format(
+    monkeypatch, recovery, json_mode
+):
+    monkeypatch.setenv("GLM_API_KEY", "test-key")
+    requests = []
+    reply = '{"action":"Back"}' if json_mode else 'do(action="Back")'
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": reply}}]})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            return await VisualFallback(
+                client=client, api_key_env="GLM_API_KEY", reasoning_model="glm-5.3-flash"
+            ).decide(
+                goal="Go back",
+                screenshot=_png(),
+                recovery=recovery,
+                ui_state=_ui(),
+                available_tools={"system_button"},
+            )
+
+    decision = asyncio.run(run())
+    assert decision.status == "action"
+    # do(...) replies are plain text, so only JSON-mode requests may set the flag.
+    assert ("response_format" in requests[0]) is json_mode
+    if json_mode:
+        assert requests[0]["response_format"] == {"type": "json_object"}
+
+
+def test_endpoint_rejecting_json_mode_falls_back_to_prompt_only(monkeypatch):
+    monkeypatch.setenv("GLM_API_KEY", "test-key")
+    requests = []
+
+    def handle(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if "response_format" in payload:
+            return httpx.Response(400, json={"error": {"message": "unknown field"}})
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"action":"Back"}'}}]}
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            fallback = VisualFallback(
+                client=client, api_key_env="GLM_API_KEY", reasoning_model="glm-5.3-flash"
+            )
+            for _ in range(2):
+                decision = await fallback.decide(
+                    goal="Go back",
+                    screenshot=_png(),
+                    recovery=True,
+                    ui_state=_ui(),
+                    available_tools={"system_button"},
+                )
+                assert decision.status == "action"
+
+    asyncio.run(run())
+    # One rejected attempt, its plain retry, then later requests skip JSON mode.
+    assert ["response_format" in r for r in requests] == [True, False, False]
+
+
 @pytest.mark.parametrize("query_available", [False, True])
 def test_request_advertises_only_available_query_capability_and_keeps_native_scroll_data(
     monkeypatch, query_available
@@ -263,7 +328,7 @@ def test_request_advertises_only_available_query_capability_and_keeps_native_scr
             tools = {"system_button"} | (
                 {"query_collection"} if query_available else set()
             )
-            return await AutoGLMFallback(
+            return await VisualFallback(
                 client=client,
                 api_key_env="GLM_API_KEY",
                 reasoning_model="glm-5.3-flash",
@@ -295,7 +360,7 @@ def test_request_advertises_only_available_query_capability_and_keeps_native_scr
     assert ('"children_total": 8' in text) and "SCROLL_FORWARD" in text
     if not query_available:
         assert "禁止输出Query" in system
-        invalid = parse_autoglm_decision(
+        invalid = parse_visual_decision(
             '{"action":"Query","plan":{"scope":"fake","generation":1,"operation":"count"}}',
             ui_state=_ui(),
             screenshot_size=(1080, 2400),
@@ -306,7 +371,7 @@ def test_request_advertises_only_available_query_capability_and_keeps_native_scr
 
 
 def _parse(content, *, ui=None, size=(1080, 2400), tools=TOOLS, apps=()):
-    return parse_autoglm_decision(
+    return parse_visual_decision(
         content,
         ui_state=ui or _ui(),
         screenshot_size=size,
@@ -624,7 +689,7 @@ def test_http_request_uses_official_endpoint_latest_image_and_bounded_text_histo
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(client=client, max_history_turns=1)
+            fallback = VisualFallback(client=client, max_history_turns=1)
             for _ in range(3):
                 decision = await fallback.decide(
                     goal="返回设置",
@@ -685,13 +750,14 @@ def test_custom_provider_routes_preparation_and_action_with_its_own_key(
                 }
             )
             if len(requests) == 1
-            else 'do(action="Back")'
+            # A non-AutoGLM action model answers in JSON, not do(...).
+            else '{"action":"Back"}'
         )
         return httpx.Response(200, json={"choices": [{"message": {"content": reply}}]})
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(
+            fallback = VisualFallback(
                 client=client,
                 base_url=url,
                 api_key_env="GLM_API_KEY",
@@ -707,6 +773,7 @@ def test_custom_provider_routes_preparation_and_action_with_its_own_key(
 
     asyncio.run(run())
     assert len(requests) == 2
+    assert requests[1]["response_format"] == {"type": "json_object"}
 
 
 def test_missing_relay_key_does_not_fall_back_to_official_credentials(monkeypatch):
@@ -721,7 +788,7 @@ def test_missing_relay_key_does_not_fall_back_to_official_credentials(monkeypatc
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(reject)) as client:
-            fallback = AutoGLMFallback(
+            fallback = VisualFallback(
                 client=client,
                 base_url="https://relay.example/v1",
                 api_key_env="GLM_API_KEY",
@@ -749,7 +816,7 @@ def test_missing_relay_key_does_not_fall_back_to_official_credentials(monkeypatc
 )
 def test_provider_url_rejects_embedded_secrets_and_non_http_urls(url):
     with pytest.raises(ValueError):
-        AutoGLMFallback(base_url=url)
+        VisualFallback(base_url=url)
 
 
 @pytest.mark.parametrize("typing_only", [False, True])
@@ -772,7 +839,7 @@ def test_request_includes_observed_input_focus_despite_stale_phone_metadata(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            result = await AutoGLMFallback(client=client).decide(
+            result = await VisualFallback(client=client).decide(
                 goal="Enter example.com without submitting",
                 screenshot=_png(),
                 ui_state=_ui(
@@ -844,7 +911,7 @@ def test_text_argument_resolution_cannot_finish_the_whole_task(monkeypatch):
                 )
             )
         ) as client:
-            return await AutoGLMFallback(client=client).decide(
+            return await VisualFallback(client=client).decide(
                 goal="Enter example.com",
                 screenshot=_png(),
                 ui_state=_ui(
@@ -935,7 +1002,7 @@ def test_review_with_only_empty_checks_cannot_certify_an_accessible_page(monkeyp
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await AutoGLMFallback(
+            return await VisualFallback(
                 client=client, reasoning_model="review-model"
             ).decide(
                 goal="Open the Copy menu",
@@ -1017,7 +1084,7 @@ def test_query_contract_requires_answer_on_every_review(monkeypatch):
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(client=client, reasoning_model="glm-4.6v")
+            fallback = VisualFallback(client=client, reasoning_model="glm-4.6v")
             args = dict(
                 goal="What time is the meeting?",
                 screenshot=_png(),
@@ -1184,7 +1251,7 @@ def test_semantic_recovery_uses_reasoner_only_when_requested(monkeypatch, recove
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(client=client, reasoning_model="reasoner")
+            fallback = VisualFallback(client=client, reasoning_model="reasoner")
             result = await fallback.decide(
                 goal="Select the entered text",
                 screenshot=_png(),
@@ -1198,7 +1265,8 @@ def test_semantic_recovery_uses_reasoner_only_when_requested(monkeypatch, recove
 
     asyncio.run(run())
     assert requests[0]["model"] == ("reasoner" if recovery else "autoglm-phone")
-    assert "response_format" not in requests[0]
+    # JSON-mode (structured) requests constrain the format; do(...) requests cannot.
+    assert ("response_format" in requests[0]) is recovery
 
 
 @pytest.mark.parametrize(
@@ -1213,7 +1281,7 @@ def test_semantic_recovery_uses_reasoner_only_when_requested(monkeypatch, recove
     ],
 )
 def test_structured_recovery_preserves_action_validation(action):
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         json.dumps(action),
         ui_state=_ui(),
         screenshot_size=(1080, 2400),
@@ -1224,7 +1292,7 @@ def test_structured_recovery_preserves_action_validation(action):
 
 
 def test_structured_recovery_cannot_use_unavailable_tools():
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         '{"action":"Long Press","element":[500,500]}',
         ui_state=_ui(),
         screenshot_size=(1080, 2400),
@@ -1276,7 +1344,7 @@ def test_reasoning_model_handles_review_and_text_resolution_without_executor_his
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(client=client, reasoning_model=model)
+            fallback = VisualFallback(client=client, reasoning_model=model)
             result = await fallback.decide(
                 goal="Enter example.com",
                 screenshot=_png(),
@@ -1304,7 +1372,8 @@ def test_reasoning_model_handles_review_and_text_resolution_without_executor_his
     request = requests[-1]
     assert request["model"] == model
     assert all(r["max_tokens"] == token_limit for r in requests)
-    assert all("response_format" not in r for r in requests)
+    # Text resolution is a JSON-mode request; the reviewer path is not.
+    assert all(("response_format" in r) is (not review) for r in requests)
     content = request["messages"][-1]["content"]
     if review:
         assert len(requests) == 2
@@ -1365,7 +1434,7 @@ def test_goal_only_contract_survives_omitted_review_checks_and_resets_on_new_goa
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(client=client, reasoning_model="review-model")
+            fallback = VisualFallback(client=client, reasoning_model="review-model")
             for task in (goal, goal, "New task"):
                 result = await fallback.decide(
                     goal=task,
@@ -1438,7 +1507,7 @@ def test_claimed_package_must_come_from_goal_contract_or_observation(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await AutoGLMFallback(
+            return await VisualFallback(
                 client=client, reasoning_model="review-model"
             ).decide(
                 goal="Stay on the requested page",
@@ -1485,7 +1554,7 @@ def test_busy_response_retries_once_without_dispatching_device_actions(
     async def sleep(delay):
         sleeps.append(delay)
 
-    monkeypatch.setattr("mobilerun.agent.decision.autoglm.asyncio.sleep", sleep)
+    monkeypatch.setattr("mobilerun.agent.decision.visual_fallback.asyncio.sleep", sleep)
 
     def handle(request):
         requests.append(json.loads(request.content))
@@ -1497,7 +1566,7 @@ def test_busy_response_retries_once_without_dispatching_device_actions(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            result = await AutoGLMFallback(client=client).decide(
+            result = await VisualFallback(client=client).decide(
                 goal="Go back", screenshot=_png(), ui_state=_ui(), available_tools=TOOLS
             )
             assert not client.is_closed
@@ -1521,7 +1590,7 @@ def test_other_rate_limit_errors_are_not_retried(monkeypatch, body):
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await AutoGLMFallback(client=client).decide(
+            return await VisualFallback(client=client).decide(
                 goal="Go back", screenshot=_png(), ui_state=_ui(), available_tools=TOOLS
             )
 
@@ -1540,7 +1609,7 @@ def test_busy_backoff_cannot_exceed_total_request_deadline(monkeypatch):
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await AutoGLMFallback(client=client, timeout=0.05).decide(
+            return await VisualFallback(client=client, timeout=0.05).decide(
                 goal="Go back", screenshot=_png(), ui_state=_ui(), available_tools=TOOLS
             )
 
@@ -1561,7 +1630,7 @@ def test_typed_inference_transient_errors_retry_once_and_return_only_one_action(
     async def sleep(delay):
         assert delay == 0.25
 
-    monkeypatch.setattr("mobilerun.agent.decision.autoglm.asyncio.sleep", sleep)
+    monkeypatch.setattr("mobilerun.agent.decision.visual_fallback.asyncio.sleep", sleep)
 
     def handle(request):
         requests.append(json.loads(request.content))
@@ -1573,7 +1642,7 @@ def test_typed_inference_transient_errors_retry_once_and_return_only_one_action(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(client=client)
+            fallback = VisualFallback(client=client)
             fallback._goal = "Go back"
             fallback._completion_contract = {
                 "schema_version": 2,
@@ -1607,7 +1676,7 @@ def test_task_preparation_transient_retry_is_bounded_before_a_contract_exists(
     async def sleep(delay):
         assert delay == 0.25
 
-    monkeypatch.setattr("mobilerun.agent.decision.autoglm.asyncio.sleep", sleep)
+    monkeypatch.setattr("mobilerun.agent.decision.visual_fallback.asyncio.sleep", sleep)
 
     def handle(request):
         requests.append(json.loads(request.content))
@@ -1632,7 +1701,7 @@ def test_task_preparation_transient_retry_is_bounded_before_a_contract_exists(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            fallback = AutoGLMFallback(client=client, reasoning_model="glm-4.6v")
+            fallback = VisualFallback(client=client, reasoning_model="glm-4.6v")
             result = await fallback.prepare_task(goal="Go back")
             assert fallback.completion_contract is not None
             return result
@@ -1652,7 +1721,7 @@ def test_transient_retry_does_not_extend_total_deadline(monkeypatch):
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await AutoGLMFallback(
+            return await VisualFallback(
                 client=client, reasoning_model="glm-4.6v", timeout=0.05
             ).prepare_task(goal="Go back")
 
@@ -1702,7 +1771,7 @@ def test_text_resolution_receives_other_current_form_components_without_an_image
                     },
                 ]
             )
-            fallback = AutoGLMFallback(
+            fallback = VisualFallback(
                 client=client,
                 base_url="https://relay.example/v1",
                 api_key_env="GLM_API_KEY",
@@ -1774,7 +1843,7 @@ def test_api_failures_do_not_leak_response_secrets_or_retry(failure, monkeypatch
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await AutoGLMFallback(client=client).decide(
+            return await VisualFallback(client=client).decide(
                 goal="返回",
                 screenshot=_png(),
                 ui_state=_ui(),
@@ -1800,7 +1869,7 @@ def test_missing_key_or_corrupt_screenshot_fails_before_network(monkeypatch):
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(unexpected_request)
         ) as client:
-            fallback = AutoGLMFallback(client=client)
+            fallback = VisualFallback(client=client)
             result = await fallback.decide(
                 goal="返回", screenshot=_png(), ui_state=_ui(), available_tools=TOOLS
             )
@@ -1814,3 +1883,29 @@ def test_missing_key_or_corrupt_screenshot_fails_before_network(monkeypatch):
             )
 
     assert asyncio.run(run()).status == "error"
+
+
+@pytest.mark.parametrize("model,json_mode", [("autoglm-phone", False), ("qwen-vl-max", True)])
+def test_only_autoglm_action_models_use_the_do_protocol(monkeypatch, model, json_mode):
+    monkeypatch.setenv("GLM_API_KEY", "test-key")
+    requests = []
+    reply = '{"action":"Back"}' if json_mode else 'do(action="Back")'
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": reply}}]})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            return await VisualFallback(
+                client=client, api_key_env="GLM_API_KEY", model=model
+            ).decide(
+                goal="Go back",
+                screenshot=_png(),
+                ui_state=_ui(),
+                available_tools={"system_button"},
+            )
+
+    assert asyncio.run(run()).status == "action"
+    assert requests[0]["model"] == model
+    assert ("response_format" in requests[0]) is json_mode

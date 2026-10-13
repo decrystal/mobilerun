@@ -4,18 +4,19 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from mobilerun.agent.decision.autoglm import AutoGLMDecision
-from mobilerun.agent.decision.contracts import ContractError
 from test_decision_visual_guards import _runtime
 from test_persistent_result_evidence import assessed, contract, reopened
+
+from mobilerun.agent.decision.contracts import ContractError
+from mobilerun.agent.decision.visual_fallback import VisualDecision
 
 
 @pytest.mark.parametrize("field", ["result_refs", "reopen_trace", "persistent_result"])
 def test_existing_bounded_retry_explains_result_and_trace_reference_membership(field):
     async def run():
-        error = AutoGLMDecision(
+        error = VisualDecision(
             "error",
-            message="Completion reviewer returned invalid evidence.",
+            message="Completion reviewer returned invalid evidence.", format_error=True,
             error_code=(
                 "effect_unverified"
                 if field == "persistent_result"

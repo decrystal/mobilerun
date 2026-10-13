@@ -9,9 +9,9 @@ from test_decision_visual_guards import _image, _runtime
 from test_query_semantic_scope import scoped_contract
 from test_task_evidence import ui
 
-from mobilerun.agent.decision.autoglm import AutoGLMDecision, AutoGLMFallback
 from mobilerun.agent.decision.contracts import ContractError, parse_grounded_review
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualDecision, VisualFallback
 from mobilerun.config_manager.config_manager import JevConfig
 
 GOAL = "What balance is currently displayed for the Travel account?"
@@ -137,7 +137,7 @@ def test_runtime_uses_exact_visual_frame_guard_for_scoped_direct_answers(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 query_scopes=True,
@@ -185,9 +185,9 @@ def test_scope_retry_keeps_a_direct_visual_path_when_no_native_query_exists():
 
         async def decide(self, **kwargs):
             self.requests.append(kwargs)
-            return AutoGLMDecision(
+            return VisualDecision(
                 "error",
-                message="Completion reviewer returned invalid evidence.",
+                message="Completion reviewer returned invalid evidence.", format_error=True,
                 error_code="query_scope_unverified",
                 error_field="query_scope",
             )
@@ -222,7 +222,7 @@ def test_visual_review_prompt_distinguishes_query_sources_from_direct_images(
     async def run():
         state = fixture()
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 query_scopes=True,

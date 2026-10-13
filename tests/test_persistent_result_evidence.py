@@ -11,7 +11,6 @@ from test_decision_visual_guards import _image, _runtime
 from test_task_evidence import review, task, ui
 
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import AutoGLMFallback
 from mobilerun.agent.decision.contracts import (
     ContractError,
     parse_grounded_review,
@@ -19,6 +18,7 @@ from mobilerun.agent.decision.contracts import (
 )
 from mobilerun.agent.decision.runtime import DecisionRuntime
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback
 from mobilerun.agent.fast_agent.xml_parser import ToolCall
 from mobilerun.config_manager.config_manager import JevConfig
 
@@ -165,7 +165,7 @@ def test_effect_scope_switch_is_a_strict_boolean(value):
     with pytest.raises(ValueError, match="effect_scopes"):
         JevConfig(effect_scopes=value)
     with pytest.raises(ValueError, match="effect_scopes"):
-        AutoGLMFallback(effect_scopes=value)
+        VisualFallback(effect_scopes=value)
 
 
 @pytest.mark.parametrize("kind", ["state", "collection", "artifact"])
@@ -375,7 +375,7 @@ def test_goal_scope_compilation_uses_one_existing_request_and_preserves_the_goal
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 client=client,
@@ -440,7 +440,7 @@ def test_review_http_requires_result_refs_without_an_additional_request_stage(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 client=client,
@@ -484,7 +484,7 @@ def test_missing_scope_retries_only_the_existing_goal_compilation_budget(monkeyp
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="glm-5.3-flash",
                 client=client,
                 base_url="http://example.invalid/v1",

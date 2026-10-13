@@ -231,3 +231,30 @@ def test_degraded_snapshot_is_preserved_but_reported_as_an_evidence_error(tmp_pa
     assert errors == ["completion_portal_state: StaleObservationError"]
     assert json.loads((tmp_path / "completion-ui.json").read_text()) == raw
     assert (tmp_path / "completion.png").read_bytes() == b"current screenshot"
+
+
+def test_case_summary_lists_outcome_time_steps_and_effects():
+    report = {
+        "success": False,
+        "error": None,
+        "model_result": {"reason": "E2 could not be verified\nSide effects: ..."},
+        "elapsed_seconds": 75.25,
+        "api_calls_by_model": {"jev-1.13.0": 4, "glm-5.3-flash": 5},
+    }
+    actions = [
+        {"source": "jev", "tool": "launch_app", "success": True, "summary": "App started"},
+        {"source": "autoglm", "tool": "click", "success": False, "summary": "Clicked  儲存"},
+    ]
+    trace = [
+        {"event": "side_effect", "id": "E1", "expected_effect": "保存图片", "status": "pending"},
+        {"event": "effect_verification", "effect": "E1", "status": "probing"},
+        {"event": "effect_verification", "effect": "E1", "status": "confirmed"},
+    ]
+    text = runner.format_summary(report, actions, trace)
+    assert "结果：失败（E2 could not be verified）" in text
+    assert "总耗时：75.2 秒" in text or "总耗时：75.3 秒" in text
+    assert "执行步骤（2 步）" in text
+    assert "   1. [jev] launch_app  App started" in text
+    assert "   2. [visual] click ✗  Clicked 儲存" in text
+    assert "E1 已确认  保存图片" in text
+    assert "模型调用：jev-1.13.0 4 次，glm-5.3-flash 5 次" in text

@@ -9,7 +9,6 @@ import pytest
 from test_decision_visual_guards import _runtime, _ui
 from test_task_evidence import task
 
-from mobilerun.agent.decision.autoglm import AutoGLMFallback
 from mobilerun.agent.decision.native_proof_binding import (
     NativeProofBindingError,
     bind_native_proofs,
@@ -20,6 +19,7 @@ from mobilerun.agent.decision.task_state import (
     corroborate_nodes,
     observed_nodes,
 )
+from mobilerun.agent.decision.visual_fallback import VisualFallback
 from mobilerun.config_manager.config_manager import JevConfig
 
 GOAL = "Keep the requested records and their saved properties"
@@ -313,7 +313,7 @@ def test_one_mock_http_review_cannot_dispatch_complete_from_changed_object_owner
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="glm-5.3-flash",
                 api_key_env="GLM_API_KEY",
                 thinking_mode="disabled",
@@ -405,7 +405,7 @@ def test_disabled_and_older_adapters_keep_their_existing_binding_protocol(
                 )
             )
         ) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="glm-5.3-flash",
                 api_key_env="GLM_API_KEY",
                 client=client,

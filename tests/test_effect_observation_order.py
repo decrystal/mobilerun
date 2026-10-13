@@ -10,9 +10,9 @@ from test_decision_visual_guards import _image, _runtime
 from test_task_evidence import review, task, ui
 
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import AutoGLMFallback
 from mobilerun.agent.decision.contracts import ContractError, parse_grounded_review
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback
 from mobilerun.agent.fast_agent.xml_parser import ToolCall
 
 
@@ -237,7 +237,7 @@ def test_http_reviewer_reports_temporal_gap_without_an_additional_request(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 base_url="https://example.invalid/v1",
@@ -287,7 +287,7 @@ def test_runtime_uses_existing_single_review_retry_and_preserves_no_replay(monke
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 base_url="https://example.invalid/v1",

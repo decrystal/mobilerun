@@ -5,16 +5,17 @@ import json
 
 import httpx
 import pytest
-from mobilerun.agent.decision.autoglm import (
-    _GROUNDED_REVIEW_PROMPT,
-    AutoGLMFallback,
-    _grounded_review_prompt,
-)
-from mobilerun.agent.decision.contracts import ContractError, parse_grounded_review
-from mobilerun.agent.decision.task_state import TaskState
-from mobilerun.config_manager.config_manager import JevConfig
 from test_decision_visual_guards import _image, _runtime, _ui
 from test_task_evidence import review, task, ui
+
+from mobilerun.agent.decision.contracts import ContractError, parse_grounded_review
+from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import (
+    _GROUNDED_REVIEW_PROMPT,
+    VisualFallback,
+    _grounded_review_prompt,
+)
+from mobilerun.config_manager.config_manager import JevConfig
 
 
 @pytest.mark.parametrize("selector", [[], ["O1:n0"], ["O1:image1"]])
@@ -226,7 +227,7 @@ def test_derived_http_review_is_one_call_and_fresh_guard_still_rejects_changes(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 model="glm-5.3-flash",
                 reasoning_model="glm-5.3-flash",
                 base_url="https://example.invalid/v1",

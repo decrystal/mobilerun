@@ -8,10 +8,10 @@ from test_decision_visual_guards import _image, _runtime
 from test_task_evidence import ui
 from test_visual_query_scope import GOAL, contract, parsed, response
 
-from mobilerun.agent.decision.autoglm import AutoGLMFallback
 from mobilerun.agent.decision.effect_order import has_post_action_result
 from mobilerun.agent.decision.runtime import DecisionRuntime
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback
 from mobilerun.config_manager.config_manager import JevConfig
 
 
@@ -158,7 +158,7 @@ def test_actual_previous_frame_cache_survives_next_frame_and_uploads_with_its_ol
     monkeypatch.setenv("GLM_API_KEY", "offline-test-secret")
     state = enabled_state()
     state.observe(ui(), screenshot=_image("red"))
-    adapter = AutoGLMFallback()
+    adapter = VisualFallback()
     old = adapter._cache_review_image(
         state.evidence(), state.current_id, _image("red"), "image/png"
     )

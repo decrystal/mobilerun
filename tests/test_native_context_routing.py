@@ -6,11 +6,12 @@ import json
 
 import httpx
 import pytest
-from mobilerun.agent.decision.autoglm import AutoGLMFallback, _ledger_evidence
-from mobilerun.agent.decision.native_context import ALIASES_FIELD, compact_native_values
-from mobilerun.agent.decision.task_state import TaskState
 from test_decision_visual_guards import _image, _ui
 from test_task_evidence import task
+
+from mobilerun.agent.decision.native_context import ALIASES_FIELD, compact_native_values
+from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback, _ledger_evidence
 
 
 @pytest.mark.parametrize("body_chars", [600, 2400, 9000])
@@ -81,7 +82,7 @@ def test_same_evidence_keeps_model_protocol_and_validation_after_sharing(
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             for ledger in (ordinary, shared):
-                adapter = AutoGLMFallback(
+                adapter = VisualFallback(
                     model="autoglm-phone",
                     reasoning_model="reasoner",
                     base_url="https://example.invalid/v1",
@@ -149,7 +150,7 @@ def test_untyped_context_keeps_phone_protocol_even_with_long_shared_values(monke
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="reasoner",
                 base_url="https://example.invalid/v1",
                 api_key_env="GLM_API_KEY",

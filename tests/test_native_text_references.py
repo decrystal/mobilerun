@@ -7,8 +7,10 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from test_decision_visual_guards import _runtime, _ui
+from test_task_evidence import task
+
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import AutoGLMFallback, parse_autoglm_decision
 from mobilerun.agent.decision.contracts import ContractError
 from mobilerun.agent.decision.native_text import (
     advertised_native_sources,
@@ -17,9 +19,8 @@ from mobilerun.agent.decision.native_text import (
     validate_native_text_receipt,
 )
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import VisualFallback, parse_visual_decision
 from mobilerun.config_manager.config_manager import JevConfig
-from test_decision_visual_guards import _runtime, _ui
-from test_task_evidence import task
 
 GOAL = "Copy the captured body into the destination"
 BODY = "  保留全部正文、标点和空行。\n\nCaptured original 🌱.\n" * 180
@@ -103,7 +104,7 @@ def test_exact_source_action_preserves_unicode_whitespace_and_one_normal_type(
         if structured
         else 'do(action="Type", text_source=' + repr(spec) + ")"
     )
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         content,
         ui_state=destination(),
         screenshot_size=(400, 800),
@@ -137,7 +138,7 @@ def test_invented_fields_refs_transformations_and_paths_cannot_be_input_sources(
     snapshot = captured_state().native_text_snapshot()
     with pytest.raises(ContractError):
         resolve_native_text(spec, snapshot["private"], GOAL)
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         json.dumps({"action": "Type", "text_source": spec}),
         ui_state=destination(),
         screenshot_size=(400, 800),
@@ -152,7 +153,7 @@ def test_invented_fields_refs_transformations_and_paths_cannot_be_input_sources(
 @pytest.mark.parametrize("extra", [{"text": "override"}, {"clear": False}])
 def test_model_cannot_override_resolved_value_or_device_parameters(extra):
     snapshot = captured_state().native_text_snapshot()
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         json.dumps(
             {
                 "action": "Type",
@@ -180,7 +181,7 @@ def test_unknown_goal_unadvertised_source_and_disabled_protocol_are_rejected():
     metadata["sources"][0]["preview"] = "different source description"
     with pytest.raises(ContractError):
         advertised_native_sources(metadata, snapshot["private"], GOAL)
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         '{"action":"Type","text_source":{"ref":"O1:n1","field":"rawText"}}',
         ui_state=destination(),
         screenshot_size=(400, 800),
@@ -263,7 +264,7 @@ def test_one_http_reference_resolves_old_body_and_preserves_preexecution_guards(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="reasoner",
                 api_key_env="GLM_API_KEY",
                 base_url="https://example.invalid/v1",
@@ -355,7 +356,7 @@ def test_goal_reset_cannot_reuse_an_old_captured_value_or_receipt():
     ],
 )
 def test_ambiguous_or_executable_reference_syntax_is_rejected(response, structured):
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         response,
         ui_state=destination(),
         screenshot_size=(400, 800),
@@ -371,7 +372,7 @@ def test_ambiguous_or_executable_reference_syntax_is_rejected(response, structur
 def test_disabled_or_unsupported_adapter_keeps_original_kwargs_and_jev_context(
     enabled, capable
 ):
-    from mobilerun.agent.decision.autoglm import AutoGLMDecision, AutoGLMToolCall
+    from mobilerun.agent.decision.visual_fallback import VisualDecision, VisualToolCall
 
     class Adapter:
         supports_native_text_references = capable
@@ -379,8 +380,8 @@ def test_disabled_or_unsupported_adapter_keeps_original_kwargs_and_jev_context(
 
         async def decide(self, **kwargs):
             self.kwargs = kwargs
-            return AutoGLMDecision(
-                "action", (AutoGLMToolCall("type", {"text": "literal", "clear": True}),)
+            return VisualDecision(
+                "action", (VisualToolCall("type", {"text": "literal", "clear": True}),)
             )
 
     adapter = Adapter()
@@ -416,13 +417,13 @@ def test_reference_capability_configuration_requires_boolean(value):
 def test_reference_survives_explicit_activation_and_only_one_bound_input_repair(
     monkeypatch, changed
 ):
-    from mobilerun.agent.decision.autoglm import AutoGLMDecision
+    from mobilerun.agent.decision.visual_fallback import VisualDecision
 
     class Adapter:
         supports_native_text_references = True
 
         async def decide(self, **kwargs):
-            return parse_autoglm_decision(
+            return parse_visual_decision(
                 '{"action":"Type","text_source":{"ref":"O1:n1","field":"rawText"}}',
                 ui_state=kwargs["ui_state"],
                 screenshot_size=(400, 800),
@@ -449,7 +450,7 @@ def test_reference_survives_explicit_activation_and_only_one_bound_input_repair(
         runner.task_state.set_contract(task(GOAL, "process"))
         runner.feedback = "text_value_required"
         selected = await runner._visual(provider.ui)
-        assert not isinstance(selected, AutoGLMDecision) and selected.input_source
+        assert not isinstance(selected, VisualDecision) and selected.input_source
         current, reason = await runner.validate_before_execute()
         assert reason is None
         original = selected.calls[0]
@@ -551,7 +552,7 @@ def test_malformed_source_index_is_rejected_before_http(monkeypatch, index):
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="reasoner", api_key_env="GLM_API_KEY", client=client
             )
             adapter._goal, adapter._completion_contract = GOAL, task(GOAL, "process")

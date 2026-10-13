@@ -12,18 +12,18 @@ from test_native_text_references import BODY, destination
 from test_task_evidence import task
 
 from mobilerun.agent.action_result import ActionResult
-from mobilerun.agent.decision.autoglm import (
-    AutoGLMDecision,
-    AutoGLMFallback,
-    AutoGLMToolCall,
-    parse_autoglm_decision,
-)
 from mobilerun.agent.decision.native_patch import resolve_native_text_patch
 from mobilerun.agent.decision.native_text import (
     text_digest,
     validate_native_text_receipt,
 )
 from mobilerun.agent.decision.task_state import TaskState
+from mobilerun.agent.decision.visual_fallback import (
+    VisualDecision,
+    VisualFallback,
+    VisualToolCall,
+    parse_visual_decision,
+)
 from mobilerun.config_manager.config_manager import JevConfig
 
 GOAL = "Change only the requested fragment and preserve the rest of the original body"
@@ -75,7 +75,7 @@ def parse(
         if structured
         else 'do(action="Type", text_patch=' + repr(value["text_patch"]) + ")"
     )
-    return parse_autoglm_decision(
+    return parse_visual_decision(
         content,
         ui_state=page,
         screenshot_size=(400, 800),
@@ -251,7 +251,7 @@ def test_nested_duplicate_keys_and_executable_literal_values_are_rejected(
         else:
             literal = literal[:-1] + ", **{}}"
         content = 'do(action="Type", text_patch=' + literal + ")"
-    result = parse_autoglm_decision(
+    result = parse_visual_decision(
         content,
         ui_state=page,
         screenshot_size=(400, 800),
@@ -347,7 +347,7 @@ def test_one_mock_http_patch_retains_source_execution_and_readback_guards(
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            adapter = AutoGLMFallback(
+            adapter = VisualFallback(
                 reasoning_model="reasoner", api_key_env="GLM_API_KEY", client=client
             )
             adapter._goal, adapter._completion_contract = GOAL, task(GOAL, "process")
@@ -425,9 +425,9 @@ def test_one_observed_input_mismatch_repair_reuses_full_result_without_reapplyin
                 kwargs["ui_state"],
                 kwargs["task_state"]["ledger"]["current_observation"],
             )
-            return AutoGLMDecision(
+            return VisualDecision(
                 "action",
-                (AutoGLMToolCall("type", {"text": text, "clear": True}),),
+                (VisualToolCall("type", {"text": text, "clear": True}),),
                 input_source=receipt,
             )
 
@@ -496,8 +496,8 @@ def test_disabled_old_and_incompatible_adapters_do_not_receive_patch_capability(
 
         async def decide(self, **kwargs):
             self.kwargs = kwargs
-            return AutoGLMDecision(
-                "action", (AutoGLMToolCall("type", {"text": "literal", "clear": True}),)
+            return VisualDecision(
+                "action", (VisualToolCall("type", {"text": "literal", "clear": True}),)
             )
 
     state, page = state_and_page()
