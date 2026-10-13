@@ -26,6 +26,17 @@ screen; after a failed approach, try a supported alternative or report the block
 An unexecuted proposal is not progress. Model progress notes are working hypotheses;
 the current screen and actual tool results take precedence.
 
+Many effects are not visible on the current screen. Tapping a button in a bottom
+sheet, dialog, or popup menu that then closes and returns to the previous page
+usually means the operation completed (saved, sent, favorited, deleted), not that
+nothing happened. Saved photos and videos appear in the gallery, downloads in the
+download list, sent content in the chat or sent list, copied text in the
+clipboard, and toasts disappear quickly. Before a data-changing action, state the
+expected effect and where it can be confirmed; opening a menu, panel, or detail
+page (including a long press that reveals options) is not a data-changing action. When the effect is not visible,
+confirm it there instead of repeating the action: repeating a save, send, or order
+creates duplicates.
+
 Judge completion yourself from the FULL goal and available evidence. When done,
 explain the observed result. For multi-item tasks, account for distinct items and
 remaining work. Distinguish saving inside an app, saving to Android storage, and

@@ -120,7 +120,7 @@ async def execute_case(
     import httpx
     from llama_index.llms.openai_like import OpenAILike
 
-    from mobilerun.agent.decision.autoglm import AutoGLMFallback
+    from mobilerun.agent.decision.visual_fallback import VisualFallback
     from mobilerun.agent.droid.droid_agent import MobileAgent
     from mobilerun.config_manager import MobileConfig
     from mobilerun.tools.driver.adb_keyboard import AdbKeyboardAndroidDriver
@@ -167,7 +167,7 @@ async def execute_case(
                 "jev": {
                     "enabled": True,
                     "model": "jev-1.13.0",
-                    "fallback": "autoglm",
+                    "fallback": "visual",
                     "confidence_threshold": args.confidence,
                     "text_values": texts,
                     "completion": {} if vision_only else criteria,
@@ -208,13 +208,16 @@ async def execute_case(
                 "auto_setup": False,
                 "portal_mode": "required",
             },
-            "logging": {"save_trajectory": "none"},
+            "logging": {
+                "save_trajectory": args.save_trajectory,
+                "trajectory_gifs": False,
+            },
             "tracing": {"enabled": False},
             "telemetry": {"enabled": False},
             "tools": {"disabled_tools": []},
         }
     )
-    # Constructing the existing LLM wrapper performs no network call. In autoglm
+    # Constructing the existing LLM wrapper performs no network call. In visual
     # fallback mode the dedicated adapter converts the phone action protocol.
     llm = OpenAILike(
         model=config.agent.jev.fallback_model,
@@ -292,7 +295,7 @@ async def execute_case(
         llms=llm,
         driver=driver,
         completion_verifier=external_verifier if vision_only and criteria else None,
-        visual_fallback=AutoGLMFallback(
+        visual_fallback=VisualFallback(
             model=config.agent.jev.fallback_model,
             base_url=config.agent.jev.fallback_base_url,
             api_key_env=config.agent.jev.fallback_api_key_env,
@@ -433,7 +436,54 @@ async def execute_case(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print("CASE_RESULT " + json.dumps(report, ensure_ascii=False), flush=True)
+    print(format_summary(report, actions, agent.decision_trace), flush=True)
     return report
+
+
+def format_summary(report, actions, trace) -> str:
+    """Human-readable recap of one case: outcome, total time, steps, effects."""
+    result = report.get("model_result")
+    reason = (
+        (report.get("error") or {}).get("message")
+        or (result.get("reason") if isinstance(result, dict) else "")
+        or ""
+    ).splitlines()
+    lines = [
+        "==== 执行摘要 ====",
+        f"结果：{'成功' if report['success'] else '失败'}"
+        + (f"（{reason[0][:160]}）" if reason and not report["success"] else ""),
+        f"总耗时：{report['elapsed_seconds']:.1f} 秒",
+        f"执行步骤（{len(actions)} 步）：",
+    ]
+    for number, row in enumerate(actions, 1):
+        source = "visual" if row.get("source") == "autoglm" else row.get("source")
+        status = "" if row.get("success", True) else " ✗"
+        summary = " ".join(str(row.get("summary", "")).split())[:80]
+        lines.append(f"  {number:>2}. [{source}] {row['tool']}{status}  {summary}")
+    effects = {}
+    for row in trace:
+        if row.get("event") == "side_effect":
+            effects[row["id"]] = [row.get("expected_effect", ""), row.get("status")]
+        elif row.get("event") == "effect_verification" and row.get("effect") in effects:
+            if row.get("status") in {"confirmed", "not_happened", "unverifiable"}:
+                effects[row["effect"]][1] = row["status"]
+    if effects:
+        labels = {
+            "confirmed": "已确认",
+            "not_happened": "未发生",
+            "unverifiable": "无法确认",
+            "pending": "未确认",
+        }
+        lines.append("副作用：")
+        lines += [
+            f"  {eid} {labels.get(status, status)}  {text[:60]}"
+            for eid, (text, status) in effects.items()
+        ]
+    calls = "，".join(
+        f"{model} {count} 次" for model, count in report["api_calls_by_model"].items()
+    )
+    lines.append(f"模型调用：{calls}")
+    return "\n".join(lines)
 
 
 async def main(args):
@@ -573,6 +623,12 @@ def build_parser():
         "--fallback-api-key-env",
         help="Dedicated provider credential environment variable.",
     )
+    parser.add_argument(
+        "--save-trajectory",
+        choices=["none", "step", "action"],
+        default="none",
+        help="Save a trajectory with a replayable macro.json (mobilerun macro replay).",
+    )
     parser.add_argument("--serial", default="emulator-5554")
     parser.add_argument("--adb", default=r"C:\leidian\LDPlayer14\adb.exe")
     parser.add_argument(
@@ -597,6 +653,13 @@ if __name__ == "__main__":
     os.environ["PATH"] = (
         str(Path(args.adb).parent) + os.pathsep + os.environ.get("PATH", "")
     )
+    # Local gitignored .env at the repo root; real environment variables win.
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            name, sep, value = line.partition("=")
+            if sep and not name.lstrip().startswith("#"):
+                os.environ.setdefault(name.strip(), value.strip().strip("\"'"))
     from mobilerun.config_manager.config_manager import JevConfig
 
     key_env = args.fallback_api_key_env or JevConfig().fallback_api_key_env

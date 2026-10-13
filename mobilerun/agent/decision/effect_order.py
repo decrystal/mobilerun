@@ -23,6 +23,9 @@ def has_post_action_result(refs: list[str], evidence: dict, current_id: str) -> 
     actions = [evidence[ref] for ref in refs if re.fullmatch(r"A[1-9]\d*", ref)]
     if not actions:
         return True
+    # A device check only lists results added after its own action.
+    if any(evidence[ref].get("source") == "device_probe" for ref in refs):
+        return True
     current = _observation_number(current_id)
     if current is None:
         return False

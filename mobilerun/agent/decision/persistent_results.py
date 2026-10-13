@@ -178,6 +178,9 @@ def persistent_result_supported(
         item = evidence[ref]
         if item.get("source") == "screenshot":
             return bool(item.get("sha256") and images.get(ref) == item["sha256"])
+        if item.get("source") == "device_probe":
+            # A file the device itself reported as added after the action.
+            return item.get("status") == "confirmed"
         if item.get("source") == "deterministic_query":
             sources = item.get("evidence_refs")
             return (

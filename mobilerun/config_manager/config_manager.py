@@ -92,7 +92,8 @@ class JevConfig:
     model: str = "jev-1.13.0"
     timeout: float = 15.0
     confidence_threshold: float = 0.5
-    fallback: Literal["llm", "autoglm"] = "llm"
+    # "autoglm" is the legacy name of "visual" and is still accepted.
+    fallback: Literal["llm", "visual", "autoglm"] = "llm"
     fallback_model: str = "glm-5.3-flash"
     reasoning_model: str = "glm-5.3-flash"
     fallback_base_url: str = "http://66.154.100.178:8080/v1"
@@ -135,8 +136,10 @@ class JevConfig:
         ):
             if type(getattr(self, name)) is not bool:
                 raise ValueError("Jev " + name + " must be a boolean")
-        if self.fallback not in {"llm", "autoglm"}:
-            raise ValueError("Jev fallback must be llm or autoglm")
+        if self.fallback == "autoglm":
+            self.fallback = "visual"
+        if self.fallback not in {"llm", "visual"}:
+            raise ValueError("Jev fallback must be llm or visual")
         if self.fallback_thinking not in {None, "enabled", "disabled"}:
             raise ValueError("Jev fallback_thinking must be enabled, disabled or None")
         if (

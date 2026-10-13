@@ -61,6 +61,7 @@ class _InputNode:
     native_type: int | None = None
     native_owner_sha256: str | None = None
     native_owner_valid: bool = True
+    selection: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -369,6 +370,12 @@ def _snapshot(tree: Any, phone_state: dict, *, raw: bool, ui=None) -> _Snapshot:
                 ),
                 native_owner_sha256=owner_sha256,
                 native_owner_valid=owner_valid,
+                selection=(
+                    (node["textSelectionStart"], node["textSelectionEnd"])
+                    if type(node.get("textSelectionStart")) is int
+                    and type(node.get("textSelectionEnd")) is int
+                    else None
+                ),
             )
         )
     return _Snapshot(package, tuple(nodes))
@@ -688,6 +695,12 @@ async def read_input_value(
         return InputReadback("unknown", "input_owner_changed")
     if found.value == text:
         return InputReadback("confirmed", "exact_value", len(found.value))
+    # Some apps prefix their field label to accessibility text ("搜尋, value").
+    # A collapsed native caret exactly at the typed length (UTF-16 units) shows
+    # the editable content is the typed value, not the composite label text.
+    typed_units = len(text.encode("utf-16-le")) // 2
+    if text and found.value.endswith(text) and found.selection == (typed_units,) * 2:
+        return InputReadback("confirmed", "labelled_exact_value", len(text))
     if target.page_context and _page_context(current) != target.page_context:
         return InputReadback("unknown", "edited_object_context_changed")
     if target.native_type is not None and target.native_type & 0xF == 3:

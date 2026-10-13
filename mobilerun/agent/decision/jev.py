@@ -45,6 +45,7 @@ _RULES = (
     "explicitly concerns the launcher icon or its context menu: then find the icon "
     "with TAP (including folders), followed by LONG_PRESS when requested. "
     "Do not repeat satisfied steps or toggle an already correct setting. "
+    "Never repeat a data-changing action (save, send, delete, order) whose effect is confirmed or unverified. "
     "TYPE_TEXT replaces the focused input with an explicitly supplied exact value; "
     "first TAP an input if it is not focused. An unsubmitted query is not a completed search. "
     "WAIT only for loading. DONE requires visible evidence for every requirement; "

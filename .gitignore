@@ -29,6 +29,7 @@ config.yaml
 
 credentials.yaml
 **/credentials.yaml
+.env
 !**/credentials_example.yaml
 
 .*/

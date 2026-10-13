@@ -257,13 +257,17 @@ def parse_grounded_review(
                 and evidence[ref].get("coverage", {}).get("complete") is True
                 for ref in refs
             )
+            # A confirmed device check (gallery listing after the action) is
+            # code-run evidence of an off-screen effect, like a calculated query.
+            probed = any(evidence[ref].get("source") == "device_probe" for ref in refs)
             if requirement["kind"] != "process" and not (
-                calculated or any(ref.startswith("O") for ref in refs)
+                calculated or probed or any(ref.startswith("O") for ref in refs)
             ):
                 raise ContractError("effect_unverified", "evidence_refs")
             if (
                 requirement["kind"] in {"query", "state", "collection", "artifact"}
                 and not calculated
+                and not probed
                 and not any(":n" in ref or ":image" in ref for ref in refs)
             ):
                 raise ContractError("effect_unverified", "content_evidence")

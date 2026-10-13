@@ -13,7 +13,7 @@ agent:
     enabled: true
     model: jev-1.13.0
     confidence_threshold: 0.5
-    fallback: autoglm
+    fallback: visual
     fallback_model: autoglm-phone
     reasoning_model: glm-4.6v
     text_values: []

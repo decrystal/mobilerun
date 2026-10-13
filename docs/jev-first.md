@@ -26,7 +26,7 @@ flowchart TD
 
 See [the optimization guide](../OPTIMIZATION.md) for setup, the CLI command, implemented capabilities and validation limits. The everyday entry point is `examples/jev_phone.py --goal ...`; final-state assertions and text candidates are optional.
 
-Configuration is opt-in with `agent.reasoning: false` and `agent.jev.enabled: true`. `fallback: autoglm` selects the dedicated phone-action/review adapter. `fallback: llm` retains the ordinary FastAgent model fallback. The example enables the Jev-first phone adapter. Provider URL, dedicated credential variable, action model and reasoning model are configurable independently.
+Configuration is opt-in with `agent.reasoning: false` and `agent.jev.enabled: true`. `fallback: visual` (legacy name `autoglm`) selects the dedicated phone-action/review adapter. `fallback: llm` retains the ordinary FastAgent model fallback. The example enables the Jev-first phone adapter. Provider URL, dedicated credential variable, action model and reasoning model are configurable independently.
 
 The selected defaults are `glm-5.3-flash`, thinking disabled, an OpenAI-compatible relay URL and a 45-second visual request deadline. Jev credentials come from `TYPESAFE_API_KEY`; relay credentials come from `GLM_API_KEY`. No credentials are embedded in this branch.
 

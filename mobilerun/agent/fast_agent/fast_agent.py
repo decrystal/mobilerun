@@ -807,6 +807,14 @@ class FastAgent(Workflow):
         self.shared_state.finished = False
         if self.decision_runtime:
             await self.decision_runtime.aclose()
+            summary = self.decision_runtime.effects.summary()
+            if summary and not ev.success:
+                # Report confirmed and unfinished side effects on every stop path.
+                ev = FastAgentEndEvent(
+                    success=False,
+                    reason=ev.reason + "\n" + summary,
+                    tool_call_count=ev.tool_call_count,
+                )
         ctx.write_event_to_stream(ev)
 
         return StopEvent(

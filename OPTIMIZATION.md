@@ -6,13 +6,13 @@
 
 | 能力 | 实现位置 | 行为 |
 | --- | --- | --- |
-| Jev 优先和模型回退 | `runtime.py`、`jev.py`、`autoglm.py` | 明确控件操作先走 Jev，其他情况按需升级。 |
+| Jev 优先和模型回退 | `runtime.py`、`jev.py`、`visual_fallback.py` | 明确控件操作先走 Jev，其他情况按需升级。 |
 | 任务契约与完成判断 | `contracts.py`、`query_scope.py` | 保留数量、范围、过程、保存和最终状态，查询 False/0 也可成功。 |
 | 字段身份及输入读回 | `input_verification.py`、`native_text.py`、`native_edit.py`、`native_patch.py` | 文字来源回指、精确输入、字段归属和输入法恢复后的检查。 |
 | 动作和保存结果 | `native_proof_binding.py`、`effect_order.py`、`persistent_results.py` | 派发与效果分开，效果未知先查结果，历史输入不能证明保存后的内容。 |
 | 跨页查询和计算 | `task_state.py`、`query.py`、`native_query_binding.py` | 保留原生对象/属性/范围，以覆盖证据过滤和计算，绑定真实来源。 |
 | 语义进展和有限恢复 | `progress.py`、`input_progress.py`、`runtime.py` | 用实际观察确认子目标进展，为未完成要求生成有界纠正动作。 |
-| 有界上下文和视觉历史 | `native_context.py`、`task_state.py`、`autoglm.py` | 共享同控件重复原值，保留实际截图观察与引用，严格限制上传数量。 |
+| 有界上下文和视觉历史 | `native_context.py`、`task_state.py`、`visual_fallback.py` | 共享同控件重复原值，保留实际截图观察与引用，严格限制上传数量。 |
 
 以上模块位于 `mobilerun/agent/decision/`。策略基于用户目标和设备观察，不包含 benchmark 题目或 App 专用执行分支。
 
@@ -26,7 +26,7 @@
 uv sync --frozen --extra jev --no-dev --python 3.11
 ```
 
-Android 设备需已连接 ADB，并安装兼容的 Mobilerun Portal 和 ADBKeyboard。Jev 使用 `TYPESAFE_API_KEY`，中转 GLM 使用独立的 `GLM_API_KEY`，均从进程环境读取；配置和日志不保存 Key。
+Android 设备需已连接 ADB，并安装兼容的 Mobilerun Portal 和 ADBKeyboard。Jev 使用 `TYPESAFE_API_KEY`，中转 GLM 使用独立的 `GLM_API_KEY`，均从进程环境读取，`examples/jev_phone.py` 也会读取仓库根目录已被 git 忽略的 `.env`（进程环境优先）；配置和日志不保存 Key。
 
 ```powershell
 .\.venv\Scripts\python.exe examples\jev_phone.py `

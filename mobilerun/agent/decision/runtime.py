@@ -20,6 +20,14 @@ from typing import Any
 
 from mobilerun.agent.action_result import ActionResult
 from mobilerun.agent.decision.completion import validate_completion_criteria
+from mobilerun.agent.decision.effects import (
+    VERIFY_TOOLS,
+    EffectLedger,
+    EffectNotes,
+    effect_key,
+    evidence_valid,
+    returned_to_previous_screen,
+)
 from mobilerun.agent.decision.input_verification import (
     capture_input_target,
     input_value_matches,
@@ -50,6 +58,7 @@ from mobilerun.agent.decision.task_state import (
     observed_nodes,
 )
 from mobilerun.agent.fast_agent.xml_parser import ToolCall
+from mobilerun.agent.utils.actions import _macro_pre_ui, _record_macro_action
 from mobilerun.tools.ui.provider import require_fresh_observation
 
 logger = logging.getLogger("mobilerun")
@@ -147,11 +156,16 @@ async def launch_app(package_name: str, *, ctx) -> ActionResult:
         return ActionResult(
             success=False, summary="App is not in the installed-app inventory"
         )
+    pre_ui = await _macro_pre_ui(ctx)
     result = await ctx.driver.start_app(package_name)
-    return ActionResult(
-        success=not (isinstance(result, str) and result.lower().startswith("failed")),
-        summary=str(result or "App launched"),
-    )
+    success = not (isinstance(result, str) and result.lower().startswith("failed"))
+    if success:
+        _record_macro_action(
+            ctx,
+            {"action_type": "start_app", "package": package_name, "activity": None},
+            pre_ui=pre_ui,
+        )
+    return ActionResult(success=success, summary=str(result or "App launched"))
 
 
 def register_decision_tools(registry):
@@ -189,6 +203,7 @@ class Selection:
     completion_image_guard: str | None = None
     completion_observation_id: str | None = None
     native_target_binding: dict | None = None
+    expected_effect: str = ""
 
     def __post_init__(self):
         if (
@@ -229,10 +244,10 @@ class DecisionRuntime:
             timeout=config.timeout,
             confidence_threshold=config.confidence_threshold,
         )
-        if visual_fallback is None and config.fallback == "autoglm":
-            from mobilerun.agent.decision.autoglm import AutoGLMFallback
+        if visual_fallback is None and config.fallback == "visual":
+            from mobilerun.agent.decision.visual_fallback import VisualFallback
 
-            visual_fallback = AutoGLMFallback(
+            visual_fallback = VisualFallback(
                 model=config.fallback_model,
                 reasoning_model=config.reasoning_model,
                 base_url=config.fallback_base_url,
@@ -305,6 +320,25 @@ class DecisionRuntime:
         self.review_diagnostic = ""
         self.query_failures = 0
         self.query_feedback = ""
+        self.effects = EffectLedger()
+        self.effect_trail = []
+        self.effect_probes = 0
+        self.media_seen = {}  # md5 -> file name saved earlier in this task
+        self.media_attributed = set()  # gallery files already linked to an effect
+        self.effect_notes = EffectNotes(None)
+        if config.fallback == "visual":
+            import platformdirs
+
+            self.effect_notes = EffectNotes(
+                Path(platformdirs.user_data_dir("mobilerun")) / "effect_notes.json"
+            )
+            if callable(getattr(self.registry, "register", None)):
+                self.registry.register(
+                    "recent_media",
+                    fn=self.recent_media,
+                    params={},
+                    description="List photos and videos added to the device gallery after the action being verified, with md5. No device mutation.",
+                )
         if getattr(config, "query_memory", True) and callable(
             getattr(self.registry, "register", None)
         ):
@@ -376,6 +410,11 @@ class DecisionRuntime:
                 self.app_card = await self.app_card_provider.load_app_card(package)
             except Exception:
                 self.record("guidance", status="unavailable", package=package)
+        notes = self.effect_notes.for_app(ui.phone_state.get("packageName", ""))
+        if notes:
+            self.app_card += "\nEffect verification notes from earlier runs:\n" + "\n".join(
+                "- " + note for note in notes
+            )
 
     def task_context(self, *, purpose="review"):
         rich = (self.task_state.contract or {}).get("schema_version") == 2
@@ -403,6 +442,8 @@ class DecisionRuntime:
         )
         if not getattr(self.config, "semantic_recovery", True):
             ledger.pop("semantic_progress", None)
+        if self.effects.entries:
+            ledger["side_effects"] = self.effects.context()
         return {
             "goal": self.goal,
             "progress_note": self.progress_note,
@@ -596,6 +637,10 @@ class DecisionRuntime:
             self.query_failures = 0
             self.query_feedback = ""
             self.last_feedback = ""
+            self.effects = EffectLedger()
+            self.effect_trail = []
+            self.media_seen = {}
+            self.media_attributed = set()
             self.record("goal_changed", previous=self.goal, goal=goal)
         self.goal = goal
         if self.task_state.goal != goal:
@@ -636,6 +681,8 @@ class DecisionRuntime:
             self.ctx.ui = ui
         self.task_state.observe(ui)
         self.record_collection_diagnostics()
+        await self.observe_media_effect()
+        self.detect_structural_effect(ui)
         if self.completion_refresh_pending:
             self.completion_refresh_pending = False
             native = self.completion_refresh_native
@@ -772,6 +819,15 @@ class DecisionRuntime:
                     input_source=copy.deepcopy(input_source),
                 )
                 return self.pending
+        effect = self.effects.pending()
+        if effect is not None and self.config.fallback == "visual":
+            # An unverified side effect is resolved before any new decision so
+            # that it can never be blindly replayed.
+            selection = await self._verify_effect(ui, effect)
+            if selection is not None:
+                return selection
+            ui = await self.state_provider.get_state()
+            self.ctx.ui = ui
         if self.query_feedback:
             self.feedback, self.query_feedback = self.query_feedback, ""
             return await self._visual(ui, recovery=True)
@@ -824,21 +880,32 @@ class DecisionRuntime:
         )
         recovery = False
         review_requested = result.status == "done" or (
-            self.config.fallback == "autoglm"
+            self.config.fallback == "visual"
             and result.operation == "DONE"
             and result.reason == "low_operation_confidence"
         )
         if result.status == "action" and result.tool_call:
             signature = self.signature(result.tool_call, ui)
+            confirmed = self.confirmed_effect_for(result.tool_call, ui)
             if (
-                signature not in self.executed
+                confirmed is None
+                and signature not in self.executed
                 and self.action_signatures[-12:].count(signature) < 2
             ):
                 self.pending = Selection(
                     "jev", [result.tool_call], guard=result, snapshot=ui
                 )
                 return self.pending
-            self.feedback = "The same action on the same screen made no progress. Choose a different way to advance the task."
+            if confirmed is not None:
+                # Jev cannot see pixels; the visual model decides whether this
+                # is a different item or a duplicate of a confirmed effect.
+                self.feedback = (
+                    f"{confirmed.id} ({confirmed.description}) was already confirmed for the same "
+                    "control. Repeat it only if the current screen shows a different item; "
+                    "otherwise continue with the remaining work."
+                )
+            else:
+                self.feedback = "The same action on the same screen made no progress. Choose a different way to advance the task."
             recovery = True
         elif review_requested:
             fresh = await self.state_provider.get_state()
@@ -850,7 +917,7 @@ class DecisionRuntime:
                 success=verified,
                 required=self.has_completion_check,
             )
-            if verified and self.config.fallback != "autoglm":
+            if verified and self.config.fallback != "visual":
                 self.pending = self.completion(fresh)
                 return self.pending
             self.feedback = (
@@ -966,6 +1033,7 @@ class DecisionRuntime:
         recovery=False,
         native_only_review=False,
         corrective_only=False,
+        verify_effect=None,
     ):
         started = time.monotonic()
         # Jev may have waited for a network timeout; observe again for the VLM.
@@ -997,6 +1065,11 @@ class DecisionRuntime:
             for key in self.task_state.collections.scopes
         ):
             tools.discard("query_collection")
+        if verify_effect is not None:
+            # Verification may navigate and probe, never commit.
+            tools = (tools & VERIFY_TOOLS) | {"verify_effect"}
+        else:
+            tools.discard("recent_media")
         # RESOLVE_INPUT asks for an argument to an already-grounded typing action.
         # A missing on-screen keyboard does not negate accessibility input focus.
         typing_only = (
@@ -1122,7 +1195,7 @@ class DecisionRuntime:
                 status="error",
                 calls=(),
                 assessments=(),
-                message="AutoGLM returned an invalid or unavailable action.",
+                message="Visual model returned an invalid or unavailable action.", format_error=True,
                 error_code="completion_disallowed",
                 error_field="action",
                 final_answer=None,
@@ -1147,7 +1220,7 @@ class DecisionRuntime:
                 result = replace(
                     result,
                     status="error",
-                    message="Completion reviewer returned invalid evidence.",
+                    message="Completion reviewer returned invalid evidence.", format_error=True,
                 )
             self.record(
                 "evidence_check", model=result.model, checks=checks, success=matched
@@ -1174,7 +1247,7 @@ class DecisionRuntime:
             )[:16]
         argument_diagnostic = None
         if getattr(result, "error_code", "") == "unknown_argument":
-            from mobilerun.agent.decision.autoglm import action_argument_diagnostic
+            from mobilerun.agent.decision.visual_fallback import action_argument_diagnostic
 
             argument_diagnostic = action_argument_diagnostic(result)
         self.record(
@@ -1201,13 +1274,7 @@ class DecisionRuntime:
         if (
             result.status == "error"
             and attempt == 0
-            and result.message
-            in {
-                "AutoGLM returned an invalid or unavailable action.",
-                "AutoGLM did not return a complete action.",
-                "Completion reviewer returned invalid evidence.",
-                "Completion reviewer contradicted the observed foreground package.",
-            }
+            and getattr(result, "format_error", False)
         ):
             # Use the existing reasoner for the single bounded retry. Phone
             # models can repeat translated app labels instead of installed IDs.
@@ -1391,7 +1458,18 @@ class DecisionRuntime:
                 recovery=retry_recovery,
                 native_only_review=native_only_review,
                 corrective_only=corrective_only,
+                verify_effect=verify_effect,
             )
+        if result.status == "verified":
+            return await self.resolve_effect(ui, verify_effect, result)
+        if verify_effect is not None and result.status in {"error", "done"}:
+            # Malformed replies or a premature Finish spend verification budget
+            # instead of ending the task while an effect is still unknown.
+            self.last_feedback = (
+                f"Answer the verification of {verify_effect.id} with a single Verify JSON object "
+                "or one read-only action."
+            )
+            return await self._verify_effect(ui, verify_effect)
         if result.status == "incomplete":
             self.review_rejections += 1
             self.record(
@@ -1473,11 +1551,28 @@ class DecisionRuntime:
             self.pending = Selection("autoglm", [], reason=reason, stop=True)
         else:
             calls = [ToolCall(call.name, dict(call.arguments)) for call in result.calls]
+            if verify_effect is not None and (
+                getattr(result, "effect", "")
+                or self._effect_key(calls[0], ui) == verify_effect.key
+            ):
+                # Each rejected replay spends verification budget; it is never executed.
+                self.record(
+                    "effect_verification",
+                    effect=verify_effect.id,
+                    status="replay_rejected",
+                )
+                self.last_feedback = (
+                    f"Rejected: {verify_effect.action_ref} must not be repeated while verifying. "
+                    "If it did not happen, output Verify with status not_happened; "
+                    "one retry is then allowed."
+                )
+                return await self._verify_effect(ui, verify_effect)
             self.pending = self.accept_fallback(
                 calls, ui, "autoglm", visual_fingerprint
             )
             self.pending.navigation_context = navigation_context
             self.pending.progress = getattr(result, "progress", "")
+            self.pending.expected_effect = getattr(result, "effect", "")
             self.pending.input_source = copy.deepcopy(
                 getattr(result, "input_source", None)
             )
@@ -1498,7 +1593,11 @@ class DecisionRuntime:
                     action_executed=False,
                 )
                 return await self._visual(
-                    ui, attempt=1, completion_review=completion_review, recovery=True
+                    ui,
+                    attempt=1,
+                    completion_review=completion_review,
+                    recovery=True,
+                    verify_effect=verify_effect,
                 )
         return self.pending
 
@@ -1619,7 +1718,7 @@ class DecisionRuntime:
         if (
             reason != "completion_unverified"
             or not getattr(self.config, "semantic_recovery", True)
-            or self.config.fallback != "autoglm"
+            or self.config.fallback != "visual"
             or self.visual_fallback is None
             or selection is None
             or selection.source != "autoglm"
@@ -1685,6 +1784,18 @@ class DecisionRuntime:
                 source,
                 [],
                 reason="Fallback returned an invalid or unavailable tool",
+                stop=True,
+            )
+        effect = self.effects.pending()
+        if (
+            effect is not None
+            and call.name != "complete"
+            and self._effect_key(call, ui) == effect.key
+        ):
+            return Selection(
+                source,
+                [],
+                reason=f"{effect.id} is unverified; it was not replayed.",
                 stop=True,
             )
         if call.name != "complete" and (
@@ -2016,9 +2127,325 @@ class DecisionRuntime:
         )
         if result.success and self.pending.progress:
             self.progress_note = self.pending.progress
+        if result.success:
+            self.track_effect(call, ui, recorded_action)
         self.record("progress", **self.task_context())
         self.last_feedback = "Actually executed: " + call.name + ". " + result.summary
         self.record("action", **entry)
+
+    def _effect_key(self, call, ui):
+        return effect_key(call, ui.phone_state.get("packageName", ""), ui.elements)
+
+    def confirmed_effect_for(self, call, ui):
+        key = self._effect_key(call, ui)
+        return next(
+            (
+                e
+                for e in reversed(self.effects.entries)
+                if e.key == key and e.status == "confirmed"
+            ),
+            None,
+        )
+
+    def track_effect(self, call, ui, action):
+        """Record declared side effects and the trail for the structural net."""
+        if self.effects.pending() is not None:
+            return  # Verification steps are read-only by policy.
+        snapshot = self.pending.snapshot or ui
+        key = self._effect_key(call, snapshot)
+        signature = self.signature(call, snapshot, self.pending.visual_fingerprint)
+        declared = bool(self.pending.expected_effect)
+        self.effect_trail = self.effect_trail[-3:] + [
+            {
+                "tool": call.name,
+                "fingerprint": snapshot_fingerprint(snapshot)
+                if snapshot.elements
+                else None,
+                "declared": declared,
+                "key": key,
+                "signature": signature,
+                "action": action,
+                "at": time.time(),
+            }
+        ]
+        if declared:
+            effect = self.effects.record(
+                key=key,
+                description=self.pending.expected_effect,
+                action_ref=action["ref"],
+                before=action.get("before"),
+                signature=signature,
+                source="declared",
+            )
+            self.record("side_effect", source="declared", **effect.context())
+
+    def _confirm_effect(self, effect, evidence, note=""):
+        self.effects.resolve(effect, "confirmed", evidence)
+        self.task_state.progress.stalled_actions = 0
+        # A confirmed effect is real progress; earlier repeats of the same
+        # control (for example on the next image) no longer imply a loop.
+        self.executed.clear()
+        self.action_signatures.clear()
+        self.effect_notes.add(effect.key[0], note)
+        self.last_feedback = f"{effect.id} confirmed: {effect.description}."
+
+    async def observe_media_effect(self):
+        """After any tap, record new gallery files as confirmed effects.
+
+        App-independent and model-free: it catches saves that nobody declared,
+        for example a save chosen by Jev, and flags duplicate bytes.
+        """
+        if (
+            not self.effect_trail
+            or self.effect_trail[-1].get("media_checked")
+            or "recent_media" not in self.registry.tools
+            or self.effects.pending() is not None
+        ):
+            return
+        last = self.effect_trail[-1]
+        last["media_checked"] = True
+        if last["tool"] not in {"click", "click_at", "double_tap_at"}:
+            return
+        rows = await self._media_rows(self.ctx, time.time() - last["at"] + 5)
+        new = [row for row in rows or [] if row["name"] not in self.media_attributed]
+        if not new:
+            return
+        self.media_attributed.update(row["name"] for row in new)
+        last["evaluated"] = True  # A media change supersedes the structural net.
+        self.effect_probes += 1
+        ref = f"P{self.effect_probes}"
+        summary = "; ".join(self._media_text(row) for row in new)
+        duplicate = any(row["duplicate_of"] for row in new)
+        effect = self.effects.record(
+            key=last["key"],
+            description=f"new gallery file after tapping '{last['key'][2]}'"
+            + (" (DUPLICATE of an earlier save)" if duplicate else ""),
+            action_ref=last["action"]["ref"],
+            before=last["action"].get("before"),
+            signature=last["signature"],
+            source="observed",
+        )
+        effect.probes += ((ref, summary),)
+        self.record("effect_probe", effect=effect.id, ref=ref, summary=summary)
+        self._confirm_effect(effect, (ref,))
+        if duplicate:
+            self.last_feedback += (
+                " The saved file duplicates an earlier save; move to a different item."
+            )
+        self.record("side_effect", source="observed", **effect.context())
+
+    def detect_structural_effect(self, ui):
+        """Safety net for undeclared effects; it only forbids a blind replay."""
+        if not self.effect_trail or self.effect_trail[-1].get("evaluated"):
+            return
+        last = self.effect_trail[-1]
+        last["evaluated"] = True
+        if (
+            self.effects.pending() is None
+            and ui.elements
+            and returned_to_previous_screen(self.effect_trail, snapshot_fingerprint(ui))
+        ):
+            effect = self.effects.record(
+                key=last["key"],
+                description=f"possible side effect of tapping '{last['key'][2]}': "
+                "a menu or dialog closed and the previous page returned",
+                action_ref=last["action"]["ref"],
+                before=last["action"].get("before"),
+                signature=last["signature"],
+                source="structural",
+            )
+            self.record("side_effect", source="structural", **effect.context())
+
+    async def _verify_effect(self, ui, effect):
+        now = time.monotonic()
+        if effect.verify_started is None:
+            effect.verify_started = now
+        if self.effects.budget_exhausted(effect, now):
+            self.effects.resolve(effect, "unverifiable")
+            self.record(
+                "effect_verification",
+                effect=effect.id,
+                status="unverifiable",
+                reason="budget_exhausted",
+            )
+            self.pending = Selection(
+                "effects",
+                [],
+                reason=f"{effect.id} could not be verified within the budget; "
+                "stopped without replaying it.",
+                stop=True,
+            )
+            return self.pending
+        if effect.verify_steps == 0 and "recent_media" in self.registry.tools:
+            # A cheap, app-independent check runs before the model is asked, so
+            # the verdict never depends on the model remembering to probe.
+            probe = await self.recent_media(ctx=self.ctx)
+            self.effect_probes += 1
+            ref = f"P{self.effect_probes}"
+            effect.probes += ((ref, probe.summary),)
+            self.record("effect_probe", effect=effect.id, ref=ref, summary=probe.summary)
+        effect.verify_steps += 1
+        self.feedback = (
+            f"Side-effect verification for {effect.id}: {effect.action_ref} "
+            f"(target '{effect.key[2]}') may have had an effect that is not visible: "
+            f"{effect.description}. Determine whether it actually happened. Do NOT repeat "
+            f"{effect.action_ref} or any other data-changing action. Use Recent_media for photos "
+            "or videos, or navigate to where the result is visible, then output Verify with "
+            f"evidence recorded after {effect.action_ref}. If the current screen already shows it "
+            "did not happen (for example the menu is still open), output Verify not_happened "
+            "citing the current observation; one retry is then allowed."
+        )
+        if effect.probes:
+            self.feedback += "\nAutomatic checks after the action (citable): " + "; ".join(
+                f"{ref}: {summary}" for ref, summary in effect.probes
+            )
+        if self.last_feedback:
+            self.feedback += "\nPrevious execution outcome: " + self.last_feedback
+        self.record(
+            "effect_verification",
+            effect=effect.id,
+            status="probing",
+            step=effect.verify_steps,
+        )
+        return await self._visual(ui, recovery=True, verify_effect=effect)
+
+    async def resolve_effect(self, ui, effect, result):
+        verdict = result.verification or {}
+        status = verdict.get("status")
+        if effect is None:
+            self.pending = Selection(
+                "effects", [], reason="Verify returned outside verification.", stop=True
+            )
+            return self.pending
+        if status == "unknown":
+            self.effects.resolve(effect, "unverifiable")
+            self.record(
+                "effect_verification",
+                effect=effect.id,
+                status="unverifiable",
+                reason="model_unknown",
+            )
+            self.pending = Selection(
+                "effects",
+                [],
+                reason=f"{effect.id} could not be verified; stopped without replaying it.",
+                stop=True,
+            )
+            return self.pending
+        # Only an explicit reference to a different effect is rejected.
+        cited = set(re.findall(r"E[1-9]\d*", str(verdict.get("effect") or "")))
+        if cited - {effect.id} or not evidence_valid(
+            effect,
+            verdict.get("evidence"),
+            self.task_state.observations,
+            self.task_state.actions,
+            {ref for ref, _ in effect.probes},
+        ):
+            self.record(
+                "effect_verification", effect=effect.id, status="evidence_rejected"
+            )
+            self.last_feedback = (
+                f"Verify rejected: cite {effect.id} and observations (O) or execution "
+                f"records (A) recorded after {effect.action_ref}."
+            )
+            return await self._verify_effect(ui, effect)
+        if status == "confirmed":
+            self._confirm_effect(effect, verdict["evidence"], verdict.get("note", ""))
+        else:
+            self.effects.resolve(effect, "not_happened", verdict["evidence"])
+            if self.effects.may_retry(effect):
+                self.executed.discard(effect.signature)
+                self.action_signatures = [
+                    s for s in self.action_signatures if s != effect.signature
+                ]
+                self.last_feedback = (
+                    f"{effect.id} did not happen; you may retry that action once."
+                )
+            else:
+                self.last_feedback = (
+                    f"{effect.id} did not happen again; do not retry it. "
+                    "Try a different way or report the blocker."
+                )
+        for action in self.task_state.actions:
+            if action.get("ref") == effect.action_ref:
+                action["side_effect"] = {"id": effect.id, "status": effect.status}
+        self.record(
+            "effect_verification",
+            effect=effect.id,
+            status=effect.status,
+            evidence=list(effect.evidence),
+        )
+        self.pending = None
+        return None
+
+    async def _media_rows(self, ctx, age_seconds: float) -> list[dict] | None:
+        """Gallery photos and videos added in the last ``age_seconds``; None if unavailable."""
+        shell = getattr(getattr(ctx.driver, "device", None), "shell", None)
+        if not callable(shell):
+            return None
+        try:
+            now = int(str(await asyncio.wait_for(shell("date +%s"), 3)).strip())
+            # Host and device clocks may differ; anchor on the device clock.
+            since = now - int(age_seconds)
+            listing = await asyncio.wait_for(
+                shell(
+                    "content query --uri content://media/external/file "
+                    "--projection _display_name:_size:date_added:_data "
+                    f'--where "media_type IN (1,3) AND date_added>={since}" '
+                    '--sort "date_added DESC"'
+                ),
+                5,
+            )
+            rows = []
+            for line in str(listing).splitlines()[:6]:
+                fields = dict(re.findall(r"(\w+)=(.*?)(?=, \w+=|$)", line.strip()))
+                path = fields.get("_data", "")
+                if not path.startswith("/storage/"):
+                    continue
+                digest = str(
+                    await asyncio.wait_for(shell(f"md5sum '{path}'"), 5)
+                ).split(" ")[0]
+                name = fields.get("_display_name")
+                earlier = self.media_seen.setdefault(digest, name)
+                rows.append(
+                    {
+                        "name": name,
+                        "size": fields.get("_size"),
+                        "md5": digest,
+                        # Identical bytes to another file from this task.
+                        "duplicate_of": earlier if earlier != name else None,
+                    }
+                )
+            return rows
+        except Exception:
+            return None
+
+    @staticmethod
+    def _media_text(row: dict) -> str:
+        return f"{row['name']} size={row['size']} md5={row['md5']}" + (
+            f" DUPLICATE of {row['duplicate_of']}" if row["duplicate_of"] else ""
+        )
+
+    async def recent_media(self, *, ctx) -> ActionResult:
+        """List gallery photos and videos added after the action being verified."""
+        effect = self.effects.pending()
+        age = (time.time() - effect.recorded_at) + 10 if effect else 300
+        rows = await self._media_rows(ctx, age)
+        if rows is None:
+            return ActionResult(
+                success=False, summary="Gallery listing failed; no device state changed."
+            )
+        self.media_attributed.update(row["name"] for row in rows)
+        rows = [self._media_text(row) for row in rows]
+        if not rows:
+            return ActionResult(
+                success=True, summary="No photos or videos were added after the action."
+            )
+        return ActionResult(
+            success=True,
+            summary=f"{len(rows)} gallery item(s) added after the action: "
+            + "; ".join(rows),
+        )
 
     async def verify_input(self, call):
         if call.name != "type":
